@@ -13,21 +13,28 @@ Named after Argus Panoptes, the all-seeing giant of Greek myth.
 ## What it does
 
 - **Live detection** — reads from your built-in camera, a USB webcam, or a phone
-  / IP camera, and draws labeled boxes on a live feed at ~25 fps.
-- **Catalog** — every detected object is stored with its type, confidence,
-  timestamp, and a snapshot image, in a local SQLite database.
+  / IP camera, and draws labeled boxes (color-coded by confidence) on a live feed.
+- **Object tracking** — assigns a stable ID to each object (ByteTrack), so a thing
+  is cataloged once per appearance instead of every frame.
+- **GPU acceleration** — auto-uses the Apple GPU (Metal/MPS) or NVIDIA CUDA when
+  available, falling back to CPU.
+- **Multi-camera** — run several cameras at once; the dashboard shows all feeds.
+- **Catalog** — every detection stored with type, confidence, timestamp, track id,
+  camera source, and a snapshot image, in a local SQLite database.
 - **Search** — find past detections by object type and time range.
-- **Gallery** — browse all captured snapshots; arrow-key through them full-size.
+- **Activity timeline** — a 24-hour chart of detection volume on the dashboard.
+- **Gallery** — browse all captured snapshots; arrow-key through them full-size,
+  download, pin, or delete.
 - **Pinning** — pin important snapshots to permanent storage so cleanup never
   removes them; a dedicated "Pinned" gallery view shows just those.
 - **Alerts** — define rules (e.g. "person, confidence ≥ 0.6, between 22:00 and
   06:00"); matches are logged and shown on the dashboard.
-- **On/off** — turn detection off from the UI to release the camera and free the
-  CPU; your stored data stays searchable.
-- **Storage cleanup** — optionally auto-delete data older than N days (pinned
-  items are always kept).
-- **Source switching** — pick the camera from a menu (auto-detected) or paste a
-  stream URL, without restarting.
+- **On/off + clean shutdown** — turn detection off to release cameras/CPU, or
+  cleanly stop the whole server from the menu.
+- **Storage cleanup** — auto-delete data older than N days and/or cap the number
+  of snapshots kept (pinned items are always kept).
+- **Camera management** — add/remove cameras from a menu (auto-detected) or by
+  pasting a stream URL, without restarting.
 
 ---
 
@@ -49,10 +56,35 @@ python3 -m venv .venv
 .venv/bin/python run.py
 ```
 
-Open **http://localhost:8000**. To view from your phone on the same wifi, open
-`http://<your-mac-ip>:8000`.
+It prints the URL to open. Served over **HTTPS**.
 
-> First run downloads the YOLO weights (`yolo11n.pt`, ~5 MB) automatically.
+> First run downloads the YOLO weights (`yolo11n.pt`, ~5 MB) and generates the
+> cert automatically.
+
+### Access modes — `ARGUS_BIND`
+
+| Mode | Command | Reachable from | Cert |
+|------|---------|----------------|------|
+| `lan` (default) | `.venv/bin/python run.py` | this Mac **and anything on your wifi** | self-signed (browser warns once) |
+| `local` | `ARGUS_BIND=local .venv/bin/python run.py` | this Mac only | self-signed |
+| `tailscale` | `ARGUS_BIND=tailscale .venv/bin/python run.py` | your devices over Tailscale, **incl. cellular** — **not** exposed on wifi | trusted (no warning) |
+
+- **Home / unsecured:** the default `lan` mode. Open the printed
+  `https://<your-mac-ip>:8000` from a phone on the same wi-fi (accept the
+  one-time self-signed warning). If the phone can't connect, check the macOS
+  firewall (System Settings → Network → Firewall) allows Python, and that the
+  phone is on the same network (not a guest SSID with client isolation).
+- **Remote / cellular (recommended):** `tailscale` mode. Requires
+  [Tailscale](https://tailscale.com) on the Mac and phone, with **MagicDNS** and
+  **HTTPS Certificates** enabled in the [admin console](https://login.tailscale.com/admin/dns).
+  Argus mints a trusted cert via `tailscale cert` and binds to the Tailscale IP
+  only, so it works from anywhere (including cell) with no certificate warning
+  and **no exposure on your wifi**. Open `https://<device>.<tailnet>.ts.net:8000`.
+- `ARGUS_HTTPS=0` serves plain http; `ARGUS_HOST=<addr>` overrides the bind
+  address directly (advanced).
+
+> iOS Safari is strict about self-signed certs — in `lan`/`local` mode use Chrome
+> on the phone, or use `tailscale` mode (trusted cert, works in Safari).
 
 To keep it running with the display asleep:
 
@@ -172,23 +204,55 @@ camera ─► capture.py ─► detector.py (YOLO) ─► db.py (SQLite)
         maintenance.py (cleanup)   web dashboard ◄─┴─ server.py
 ```
 
-- `app/capture.py` — background thread: grab frames, throttle detection, persist
-  detections, save snapshots, evaluate alerts, feed the live MJPEG stream.
-- `app/detector.py` — YOLO wrapper.
+- `run.py` — **the entry point** (`python run.py`); launches the web server.
+- `app/server.py` — FastAPI app: stream, status, search, gallery, rules,
+  settings, camera management, activity, shutdown, snapshots.
+- `app/manager.py` — owns the camera workers (multi-camera).
+- `app/capture.py` — per-camera background thread: grab frames, detect/track,
+  log detections, save snapshots, evaluate alerts, feed the live MJPEG stream.
+- `app/detector.py` — YOLO wrapper with device selection + tracking.
 - `app/db.py` — SQLite (`detections`, `alert_rules`, `alerts`, `settings`,
-  `kept_snapshots`) and the search/gallery/cleanup queries.
-- `app/alerts.py` — rule evaluation with confidence + time-of-day + cooldown.
-- `app/maintenance.py` — periodic storage cleanup honoring the retention setting.
-- `app/devices.py` — camera enumeration for the source picker.
-- `app/server.py` — FastAPI: stream, search, gallery, rules, settings, snapshots.
+  `kept_snapshots`) and the search/gallery/activity/cleanup queries.
+- `app/alerts.py` — rule evaluation with confidence + time-of-day + per-camera cooldown.
+- `app/maintenance.py` — periodic storage cleanup (age + count caps).
+- `app/devices.py` — cross-platform camera enumeration (macOS + Linux).
 - `web/` — the dashboard (plain HTML/CSS/JS, no build step).
+
+---
+
+## Security & sharing
+
+The **source code is safe to publish** — it contains no secrets or credentials,
+all database access is parameterized (no SQL injection), snapshot paths are
+validated against traversal, and `.gitignore` keeps your `data/` (the database
+and snapshot images, which may show people) out of git.
+
+**Before exposing it on a network, understand the deployment risks:**
+
+- **No authentication yet.** Anyone who can reach the port can view your camera
+  feeds, browse/delete snapshots, change settings, add cameras, and shut the
+  server down. So *how* you expose it matters — use the `ARGUS_BIND` modes above:
+  - `tailscale` — only your own Tailscale devices can reach it; nothing on wifi
+    can. This is the safe way to use it remotely.
+  - `local` — only this Mac.
+  - `lan` — open to your whole wifi; fine on a trusted home network, but don't
+    use it on untrusted/guest wifi, and never port-forward it to the internet.
+- The "custom source" field opens any URL/device you give it — only enter sources
+  you trust.
+
+In short: **publish the code freely; for remote use run it in `tailscale` mode.**
 
 ---
 
 ## Roadmap
 
+- Authentication / login (so `lan` mode can be exposed more safely)
 - Email / push notifications on alerts (already logged; delivery is a hook away)
-- Apple GPU (MPS) inference for higher fps / larger models
-- Object tracking IDs so a stationary object isn't re-logged every cycle
-- Multiple simultaneous camera sources
-- Run as a background service (launchd) that auto-starts on login
+- Run as a background service (launchd / systemd) that auto-starts on boot
+- Zone/line alert rules (trigger only when something crosses a region you draw)
+- NCNN/ONNX export path for Raspberry Pi performance
+
+Done recently: GPU (MPS/CUDA) inference · object tracking · multi-camera ·
+grouped gallery with toggleable overlay boxes · activity timeline · adaptive
+snapshot cadence · count-based cleanup · mobile-responsive UI · HTTPS · trusted
+remote access via Tailscale (`ARGUS_BIND=tailscale`) · clean shutdown.

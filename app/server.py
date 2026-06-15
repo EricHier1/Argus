@@ -5,18 +5,18 @@ from fastapi import FastAPI, Query
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, devices, maintenance
-from .capture import worker
+from . import capture, config, db, devices, maintenance
+from .manager import manager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
-    worker.start()
+    manager.start()
     maintenance.start()
     yield
     maintenance.stop()
-    worker.stop()
+    manager.stop_all()
 
 
 app = FastAPI(title="Argus", lifespan=lifespan)
@@ -24,43 +24,94 @@ app = FastAPI(title="Argus", lifespan=lifespan)
 
 # --- live feed -------------------------------------------------------------
 @app.get("/stream")
-def stream():
+def stream(source: str = Query(None)):
+    """MJPEG stream for one camera (defaults to the primary camera)."""
+    w = manager.get(source)
+    if w is None:
+        return JSONResponse({"error": "no such camera"}, status_code=404)
     return StreamingResponse(
-        worker.mjpeg_frames(),
+        w.mjpeg_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
 
 @app.get("/api/status")
 def status():
-    return worker.status
+    """Status for every active camera, plus the live-box toggle state."""
+    return {"cameras": manager.statuses(), "show_boxes": capture.get_show_boxes()}
+
+
+@app.post("/api/boxes")
+def set_boxes(payload: dict):
+    """Toggle bounding boxes on the live feed. `on`: true|false."""
+    capture.set_show_boxes(bool(payload.get("on", True)))
+    return {"show_boxes": capture.get_show_boxes()}
 
 
 @app.post("/api/power")
 def power(payload: dict):
-    """Turn detection on/off to save compute. `on`: true | false."""
-    if payload.get("on"):
-        worker.resume()
+    """Turn detection on/off to save compute. `on`: true|false. Optional `source`
+    targets one camera; omitted = all cameras."""
+    on = bool(payload.get("on"))
+    source = payload.get("source")
+    if source is not None:
+        w = manager.get(str(source))
+        if w is None:
+            return JSONResponse({"error": "no such camera"}, status_code=404)
+        w.resume() if on else w.pause()
     else:
-        worker.pause()
-    return {"paused": worker.status["paused"]}
+        manager.resume_all() if on else manager.pause_all()
+    return {"cameras": manager.statuses()}
 
 
+# --- camera management -----------------------------------------------------
 @app.get("/api/devices")
 def list_devices():
-    """Available cameras plus the currently selected source."""
-    return {"devices": devices.list_cameras(), "current": worker.source}
+    """Detected cameras on this machine, plus the sources currently in use."""
+    return {"devices": devices.list_cameras(), "active": manager.sources()}
 
 
-@app.post("/api/source")
-def set_source(payload: dict):
-    """Switch the video input. `source` may be a camera index ('0', '1', …)
-    or a stream URL (e.g. a phone/IP camera)."""
+@app.post("/api/cameras")
+def add_camera(payload: dict):
+    """Add a camera. `source` = a camera index ('0','1',…) or a stream URL."""
     source = str(payload.get("source", "")).strip()
     if not source:
         return JSONResponse({"error": "source is required"}, status_code=400)
-    worker.set_source(source)
-    return {"ok": True, "source": worker.source}
+    manager.add(source)
+    return {"ok": True, "active": manager.sources()}
+
+
+@app.post("/api/cameras/remove")
+def remove_camera(payload: dict):
+    """Remove (stop) a camera by its source string."""
+    source = str(payload.get("source", "")).strip()
+    removed = manager.remove(source)
+    return {"ok": removed, "active": manager.sources()}
+
+
+@app.get("/api/activity")
+def activity(hours: int = Query(24, ge=1, le=168), buckets: int = Query(24, ge=4, le=96)):
+    """Detection counts over time, for the dashboard timeline chart."""
+    return db.activity(hours=hours, buckets=buckets)
+
+
+@app.post("/api/shutdown")
+def shutdown():
+    """Cleanly stop all cameras and exit the process. Reliable where Ctrl-C isn't
+    (the live MJPEG streams block uvicorn's graceful shutdown, so we force-exit
+    after releasing the cameras)."""
+    import os
+    import threading
+
+    def _kill():
+        try:
+            maintenance.stop()
+            manager.stop_all()
+        finally:
+            os._exit(0)
+
+    threading.Timer(0.3, _kill).start()  # let this HTTP response flush first
+    return {"ok": True, "message": "Argus is shutting down."}
 
 
 # --- detections & search ---------------------------------------------------
@@ -78,20 +129,43 @@ def labels():
 @app.get("/api/gallery")
 def gallery(label: str = Query(None), limit: int = Query(120, le=500),
             pinned: bool = Query(False)):
+    """Gallery grouped by object (each item is one object appearance)."""
     return db.gallery(label=label or None, limit=limit, pinned=pinned)
+
+
+@app.get("/api/gallery/group")
+def gallery_group(gkey: str = Query(...)):
+    """All snapshots for one object group, for the expanded (stacked) view."""
+    return db.gallery_group(gkey)
+
+
+@app.get("/api/snapshot-boxes")
+def snapshot_boxes(name: str = Query(...)):
+    """Box geometry for a snapshot, for the toggleable gallery overlay."""
+    return db.get_snapshot_boxes(name)
+
+
+@app.delete("/api/gallery/group")
+def delete_gallery_group(gkey: str = Query(...)):
+    """Delete all snapshots belonging to one object group."""
+    return {"ok": True, "deleted": db.delete_group(gkey)}
 
 
 # --- storage settings, pinning, cleanup ------------------------------------
 @app.get("/api/settings")
 def get_settings():
-    return {"retention_days": int(float(db.get_setting("retention_days", "0")))}
+    return {
+        "retention_days": int(float(db.get_setting("retention_days", "0"))),
+        "max_snapshots": int(float(db.get_setting("max_snapshots", "0"))),
+    }
 
 
 @app.post("/api/settings")
 def update_settings(payload: dict):
     if "retention_days" in payload:
-        days = int(payload["retention_days"])
-        db.set_setting("retention_days", max(0, days))
+        db.set_setting("retention_days", max(0, int(payload["retention_days"])))
+    if "max_snapshots" in payload:
+        db.set_setting("max_snapshots", max(0, int(payload["max_snapshots"])))
     return get_settings()
 
 

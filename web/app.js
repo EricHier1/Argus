@@ -6,30 +6,87 @@ async function api(path, opts) {
   return r.json();
 }
 
-// --- status ----------------------------------------------------------------
+// --- status + live feeds (multi-camera) ------------------------------------
+let renderedSources = null;   // null forces the first render even with 0 cameras
 async function pollStatus() {
   try {
     const s = await api('/api/status');
-    updatePowerButton(s.paused);
-    const el = $('status');
-    if (s.paused) {
-      el.className = 'status';
-      el.innerHTML = `<span class="dot"></span>detection off`;
-    } else if (s.error) {
-      el.className = 'status error';
-      el.innerHTML = `<span class="dot"></span>${s.error}`;
-    } else if (s.running) {
-      el.className = 'status live';
-      const n = s.last_detection_count;
-      el.innerHTML = `<span class="dot"></span>live · ${s.source} · ${s.model} · ${s.fps} fps · ${n} object${n === 1 ? '' : 's'} in frame`;
-    } else {
-      el.className = 'status';
-      el.innerHTML = `<span class="dot"></span>starting camera…`;
-    }
+    const cameras = s.cameras || [];
+    renderFeeds(cameras);
+    updateStatusBar(cameras);
+    updatePowerButton(cameras.length > 0 && cameras.every(c => c.paused));
+    updateBoxesButton(s.show_boxes !== false);
   } catch (e) {
     $('status').className = 'status error';
     $('status').textContent = 'server unreachable';
   }
+}
+
+function updateBoxesButton(on) {
+  const btn = $('boxes-toggle');
+  if (!btn) return;
+  btn.textContent = 'Boxes: ' + (on ? 'ON' : 'OFF');
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.dataset.on = on ? '1' : '0';
+}
+$('boxes-toggle').addEventListener('click', async () => {
+  const on = $('boxes-toggle').dataset.on !== '0';
+  const r = await api('/api/boxes', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ on: !on }),
+  });
+  updateBoxesButton(r.show_boxes);
+});
+
+function renderFeeds(cameras) {
+  const grid = $('feed-grid');
+  grid.classList.toggle('multi', cameras.length > 1);
+  // Only rebuild <img> elements when the set of sources changes, so existing
+  // MJPEG streams aren't torn down on every poll.
+  const key = cameras.map(c => c.source).join('|');
+  if (key !== renderedSources) {
+    renderedSources = key;
+    grid.innerHTML = cameras.length ? cameras.map(c => `
+      <div class="feed-card">
+        <div class="feed-video"><img src="/stream?source=${encodeURIComponent(c.source)}" alt="camera ${c.source}"></div>
+        <div class="feed-cap"><span class="feed-name">cam ${c.source}</span><span class="feed-stat muted"></span></div>
+      </div>`).join('')
+      : '<span class="muted">No cameras. Add one from the settings menu.</span>';
+  }
+  const cards = grid.querySelectorAll('.feed-card');
+  cameras.forEach((c, i) => {
+    const stat = cards[i] && cards[i].querySelector('.feed-stat');
+    if (!stat) return;
+    stat.textContent = c.error ? 'error' : c.paused ? 'paused'
+      : `${c.fps} fps · ${c.last_detection_count} obj · ${c.device}`;
+    stat.className = 'feed-stat ' + (c.error ? 'err' : 'muted');
+  });
+}
+
+function updateStatusBar(cameras) {
+  const el = $('status');
+  if (!cameras.length) {
+    el.className = 'status'; el.innerHTML = '<span class="dot"></span>no cameras — add one in settings';
+    return;
+  }
+  const err = cameras.find(c => c.error);
+  if (err) { el.className = 'status error'; el.innerHTML = `<span class="dot"></span>${err.error}`; return; }
+  if (cameras.every(c => c.paused)) {
+    el.className = 'status'; el.innerHTML = '<span class="dot"></span>detection off';
+    return;
+  }
+  const live = cameras.filter(c => c.running).length;
+  const objs = cameras.reduce((a, c) => a + (c.last_detection_count || 0), 0);
+  el.className = 'status live';
+  el.innerHTML = `<span class="dot"></span>${live}/${cameras.length} cam live · ${cameras[0].device} · ${objs} object${objs === 1 ? '' : 's'} in frame`;
+}
+
+function reloadFeeds() {
+  $('feed-grid').querySelectorAll('img').forEach(img => {
+    const u = new URL(img.src, location.href);
+    u.searchParams.set('t', Date.now());
+    img.src = u.toString();
+  });
 }
 
 // --- labels (populate filters + datalist) ----------------------------------
@@ -146,37 +203,43 @@ $('search-form').addEventListener('submit', async (e) => {
 
 // --- settings menu (video source) ------------------------------------------
 const menuBtn = $('menu-btn'), menuPanel = $('menu-panel');
-menuBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  const opening = menuPanel.hidden;
-  menuPanel.hidden = !opening;
-  if (opening) { loadDevices(); loadSettings(); }
-});
+function setMenu(open) {
+  menuPanel.hidden = !open;
+  menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) { loadCameras(); loadSettings(); }
+}
+menuBtn.addEventListener('click', (e) => { e.stopPropagation(); setMenu(menuPanel.hidden); });
 document.addEventListener('click', (e) => {
-  if (!menuPanel.hidden && !menuPanel.contains(e.target) && e.target !== menuBtn) {
-    menuPanel.hidden = true;
-  }
+  if (!menuPanel.hidden && !menuPanel.contains(e.target) && e.target !== menuBtn) setMenu(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !menuPanel.hidden) setMenu(false);   // Esc closes the menu
 });
 
+let powerArmed = false, powerArmTimer = null;
 function updatePowerButton(paused) {
   const btn = $('power-toggle');
-  if (!btn) return;
-  if (paused) {
-    btn.className = 'power off';
-    btn.textContent = 'Detection: OFF — click to turn on';
-  } else {
-    btn.className = 'power on';
-    btn.textContent = 'Detection: ON — click to turn off';
-  }
+  if (!btn || powerArmed) return;   // don't overwrite the "confirm" label while armed
+  btn.className = paused ? 'power off' : 'power on';
+  btn.textContent = paused ? 'Detection OFF' : 'Detection ON';
   btn.dataset.paused = paused ? '1' : '0';
 }
 $('power-toggle').addEventListener('click', async () => {
-  const turningOn = $('power-toggle').dataset.paused === '1';
+  const btn = $('power-toggle');
+  const turningOn = btn.dataset.paused === '1';
+  if (!powerArmed) {                 // first click: arm
+    powerArmed = true;
+    btn.classList.add('arm');
+    btn.textContent = turningOn ? 'Confirm: turn ON' : 'Confirm: turn OFF';
+    powerArmTimer = setTimeout(() => { powerArmed = false; btn.classList.remove('arm'); pollStatus(); }, 2500);
+    return;
+  }
+  clearTimeout(powerArmTimer); powerArmed = false; btn.classList.remove('arm');
   await api('/api/power', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ on: turningOn }),
+    body: JSON.stringify({ on: turningOn }),   // no source = all cameras
   });
-  if (turningOn) $('stream').src = '/stream?t=' + Date.now();  // reconnect feed
+  if (turningOn) reloadFeeds();
   pollStatus();
 });
 
@@ -184,6 +247,7 @@ $('power-toggle').addEventListener('click', async () => {
 async function loadSettings() {
   const s = await api('/api/settings');
   $('retention').value = String(s.retention_days);
+  $('max-snapshots').value = s.max_snapshots ? String(s.max_snapshots) : '';
 }
 $('retention').addEventListener('change', async () => {
   await api('/api/settings', {
@@ -194,73 +258,137 @@ $('retention').addEventListener('change', async () => {
     ? 'Keeping everything. Pinned snapshots are never deleted.'
     : `Auto-deleting data older than ${$('retention').value} day(s). Pinned items kept forever.`;
 });
+$('max-snapshots').addEventListener('change', async () => {
+  await api('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ max_snapshots: parseInt($('max-snapshots').value) || 0 }),
+  });
+});
 $('clean-now').addEventListener('click', async () => {
   const btn = $('clean-now'); btn.disabled = true; btn.textContent = 'Cleaning…';
   try {
     const r = await api('/api/cleanup', { method: 'POST' });
-    $('cleanup-status').textContent = r.skipped
-      ? 'Retention is off — nothing to clean. Set a timeframe above first.'
-      : `Removed ${r.detections_deleted || 0} records and ${r.files_deleted || 0} image files.`;
+    const removed = (r.detections_deleted || 0);
+    const files = (r.files_deleted || 0) + (r.count_pruned || 0);
+    $('cleanup-status').textContent = `Removed ${removed} records and ${files} image files.`;
     if (!$('tab-gallery').hidden) loadGallery();
   } finally {
     btn.disabled = false; btn.textContent = 'Clean now';
   }
 });
 
+// --- camera management ------------------------------------------------------
 let selectedSource = null;
-async function loadDevices() {
-  const { devices, current } = await api('/api/devices');
-  selectedSource = current;
+async function loadCameras() {
+  const { devices, active } = await api('/api/devices');
+  const activeSet = new Set(active.map(String));
+
+  // currently-running cameras, each removable
+  $('active-cameras').innerHTML = active.length
+    ? active.map(s => `<div class="device-opt">
+        <span>cam ${s}</span>
+        <button class="ghost" onclick="removeCamera('${encodeURIComponent(s)}')">remove</button>
+      </div>`).join('')
+    : '<span class="muted">No active cameras.</span>';
+
+  // detected devices available to add
   const list = $('device-list');
   if (!devices.length) {
-    list.innerHTML = '<span class="muted">No cameras detected via system info. Use the custom field below (e.g. 0).</span>';
+    list.innerHTML = '<span class="muted">No cameras detected automatically. Use the field below (e.g. 0).</span>';
   } else {
     list.innerHTML = devices.map(d => {
       const val = String(d.index);
-      const isCurrent = val === String(current);
-      return `<label class="device-opt ${isCurrent ? 'selected' : ''}" data-val="${val}">
-        <input type="radio" name="device" value="${val}" ${isCurrent ? 'checked' : ''}>
-        <span>${d.name}</span>
-        <span class="muted">#${d.index}</span>
-        ${isCurrent ? '<span class="current">live</span>' : ''}
+      const inUse = activeSet.has(val);
+      return `<label class="device-opt ${inUse ? 'selected' : ''}" data-val="${val}">
+        <input type="radio" name="device" value="${val}" ${inUse ? 'disabled' : ''}>
+        <span>${d.name}</span><span class="muted">#${d.index}</span>
+        ${inUse ? '<span class="current">added</span>' : ''}
       </label>`;
     }).join('');
-    list.querySelectorAll('input[name=device]').forEach(r => {
-      r.addEventListener('change', () => {
-        selectedSource = r.value;
-        $('custom-source').value = '';
-        list.querySelectorAll('.device-opt').forEach(o =>
-          o.classList.toggle('selected', o.dataset.val === r.value));
-      });
-    });
+    list.querySelectorAll('input[name=device]').forEach(r =>
+      r.addEventListener('change', () => { selectedSource = r.value; $('custom-source').value = ''; }));
   }
 }
 
-$('rescan').addEventListener('click', () => {
-  $('device-list').innerHTML = '<span class="muted">scanning…</span>';
-  loadDevices();
-});
-
-$('apply-source').addEventListener('click', async () => {
-  const custom = $('custom-source').value.trim();
-  const source = custom || selectedSource;
+async function addCamera() {
+  const source = $('custom-source').value.trim() || selectedSource;
   if (!source) return;
-  const btn = $('apply-source');
-  btn.disabled = true; btn.textContent = 'Switching…';
+  const btn = $('add-camera'); btn.disabled = true; btn.textContent = 'Adding…';
   try {
-    await api('/api/source', {
+    await api('/api/cameras', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source }),
     });
-    // reconnect the live stream to the new source
-    $('stream').src = '/stream?t=' + Date.now();
-    menuPanel.hidden = true;
+    $('custom-source').value = ''; selectedSource = null;
+    renderedSources = '';        // force the feed grid to include the new camera
+    loadCameras(); pollStatus();
   } catch (e) {
-    alert('Could not switch source: ' + e.message);
+    alert('Could not add camera: ' + e.message);
   } finally {
-    btn.disabled = false; btn.textContent = 'Switch source';
+    btn.disabled = false; btn.textContent = 'Add camera';
   }
+}
+async function removeCamera(encSource) {
+  await api('/api/cameras/remove', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: decodeURIComponent(encSource) }),
+  });
+  renderedSources = '';          // force feed grid rebuild
+  loadCameras(); pollStatus();
+}
+window.removeCamera = removeCamera;
+$('add-camera').addEventListener('click', addCamera);
+$('rescan').addEventListener('click', () => {
+  $('device-list').innerHTML = '<span class="muted">scanning…</span>';
+  loadCameras();
 });
+
+// --- shutdown (double-click to confirm) ------------------------------------
+let shutArmed = false, shutTimer = null;
+$('shutdown').addEventListener('click', async () => {
+  const btn = $('shutdown');
+  if (!shutArmed) {
+    shutArmed = true;
+    btn.classList.add('arm');
+    btn.textContent = 'Confirm shutdown';
+    shutTimer = setTimeout(() => { shutArmed = false; btn.classList.remove('arm'); btn.textContent = 'Shut down'; }, 2500);
+    return;
+  }
+  clearTimeout(shutTimer); shutArmed = false;
+  try { await api('/api/shutdown', { method: 'POST' }); } catch (e) { /* process exits */ }
+  document.body.innerHTML =
+    '<div style="padding:48px;font:16px/1.6 sans-serif;color:#fff;background:#000;height:100vh">' +
+    'Argus has shut down.<br>Restart with <code>.venv/bin/python run.py</code> and reload.</div>';
+});
+
+// --- activity timeline ------------------------------------------------------
+async function loadActivity() {
+  let data;
+  try { data = await api('/api/activity?hours=24&buckets=24'); } catch (e) { return; }
+  drawActivity(data);
+}
+function drawActivity(data) {
+  const c = $('activity-chart');
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  const w = c.width = c.clientWidth || 600, h = c.height;
+  ctx.clearRect(0, 0, w, h);
+  const counts = data.counts || [];
+  const n = counts.length || 1;
+  const max = Math.max(1, ...counts);
+  const bw = w / n;
+  ctx.fillStyle = '#01BB4E';
+  counts.forEach((v, i) => {
+    const bh = (v / max) * (h - 18);
+    ctx.fillRect(i * bw + 1, h - bh - 14, Math.max(1, bw - 2), bh);
+  });
+  ctx.fillStyle = '#9CA3AF'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+  const step = Math.max(1, Math.ceil(n / 4));
+  for (let i = 0; i < n; i += step) {
+    const t = new Date((data.start + i * data.width_s) * 1000);
+    ctx.fillText(t.getHours() + ':00', i * bw + bw / 2, h - 2);
+  }
+}
 
 // --- tabs ------------------------------------------------------------------
 function activateTab(name) {
@@ -280,9 +408,9 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === '2') activateTab('gallery');
 });
 
-// --- gallery ---------------------------------------------------------------
-let galleryItems = [];   // current gallery list, indexed for lightbox navigation
-let galleryView = 'all'; // 'all' | 'pinned'
+// --- gallery (grouped by object) -------------------------------------------
+let galleryGroups = [];    // [{gkey, snapshot, n, labels, ts, kept, source}]
+let galleryView = 'all';   // 'all' | 'pinned'
 
 document.querySelectorAll('.gtab').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -299,67 +427,131 @@ async function loadGallery() {
   if (label) params.set('label', label);
   params.set('limit', '120');
   if (galleryView === 'pinned') params.set('pinned', 'true');
-  galleryItems = await api('/api/gallery?' + params.toString());
   const grid = $('gallery-grid');
-  if (!galleryItems.length) {
+  grid.innerHTML = '<span class="muted">Loading…</span>';
+  try {
+    galleryGroups = await api('/api/gallery?' + params.toString());
+  } catch (e) { grid.innerHTML = '<span class="muted">Could not load gallery.</span>'; return; }
+  if (!galleryGroups.length) {
     grid.innerHTML = galleryView === 'pinned'
-      ? '<span class="muted">No pinned captures yet. Open any image and click Pin to permanent.</span>'
-      : '<span class="muted">No snapshots yet. They appear when objects are detected (saved every couple of seconds).</span>';
+      ? '<span class="muted">No pinned captures yet. Open an object and tap Pin.</span>'
+      : '<span class="muted">No captures yet. Objects you detect will appear here.</span>';
     return;
   }
-  grid.innerHTML = galleryItems.map((it, i) => `
-    <div class="result ${it.kept ? 'kept' : ''}" onclick="showLightbox(${i})">
-      ${it.kept ? '<span class="pin-badge">PIN</span>' : ''}
-      <button class="del-badge" title="Delete" onclick="deleteSnapshot(event, ${i})">&times;</button>
-      <img src="/snapshots/${it.snapshot}" loading="lazy">
-      <div class="label">${(it.labels || '').split(',').join(', ')}</div>
-      <div class="muted">${fmt(it.ts)}</div>
+  grid.innerHTML = galleryGroups.map((g, i) => `
+    <div class="result ${g.kept ? 'kept' : ''} ${g.n > 1 ? 'stack' : ''}" onclick="openGroup(${i})"
+         tabindex="0" role="button" aria-label="${(g.labels || 'object')}, ${g.n} picture${g.n === 1 ? '' : 's'}">
+      ${g.kept ? '<span class="pin-badge">PIN</span>' : ''}
+      ${g.n > 1 ? `<span class="count-badge">${g.n}</span>` : ''}
+      <button class="del-badge" title="Delete object" onclick="deleteGroup(event, ${i})" aria-label="Delete">&times;</button>
+      <img src="/snapshots/${g.snapshot}" loading="lazy" alt="">
+      <div class="label">${(g.labels || '').split(',').join(', ')}</div>
+      <div class="muted">${fmt(g.ts)}${g.n > 1 ? ' · ' + g.n + ' pics' : ''}</div>
     </div>`).join('');
 }
 
-async function deleteSnapshot(event, i) {
-  if (event) event.stopPropagation();      // don't open the lightbox
-  const it = galleryItems[i];
-  if (!it || !confirm('Delete this capture permanently?')) return;
-  await api('/api/snapshot/' + encodeURIComponent(it.snapshot), { method: 'DELETE' });
-  if (!$('lightbox').hidden) closeLightbox();
+async function openGroup(i) {
+  const g = galleryGroups[i];
+  if (!g) return;
+  if (g.n > 1) {
+    // multi-pic object: browse within this object's pictures
+    lbItems = await api('/api/gallery/group?gkey=' + encodeURIComponent(g.gkey));
+    showLightboxAt(lbItems.length - 1);   // newest pic of the stack
+  } else {
+    // single-pic tile: browse across all gallery tiles
+    lbItems = galleryGroups.map(x => ({ snapshot: x.snapshot, ts: x.ts, labels: x.labels, kept: x.kept }));
+    showLightboxAt(i);
+  }
+}
+window.openGroup = openGroup;
+
+async function deleteGroup(event, i) {
+  if (event) event.stopPropagation();
+  const g = galleryGroups[i];
+  if (!g) return;
+  const msg = g.n > 1 ? `Delete all ${g.n} pictures of this object?` : 'Delete this capture?';
+  if (!confirm(msg)) return;
+  await api('/api/gallery/group?gkey=' + encodeURIComponent(g.gkey), { method: 'DELETE' });
   loadGallery();
 }
-window.deleteSnapshot = deleteSnapshot;
+window.deleteGroup = deleteGroup;
 
 function syncGalleryFilter() {
-  // mirror the detection labels into the gallery filter dropdown
-  const src = $('search-label');
-  const dst = $('gallery-label');
-  const cur = dst.value;
+  const src = $('search-label'), dst = $('gallery-label'), cur = dst.value;
   dst.innerHTML = src.innerHTML.replace('>any<', '>all<');
   dst.value = cur;
 }
 
-let lightboxIndex = -1;
-function showLightbox(i) {
-  if (i < 0 || i >= galleryItems.length) return;
-  lightboxIndex = i;
-  const it = galleryItems[i];
-  $('lightbox-img').src = '/snapshots/' + it.snapshot;
+// --- lightbox (overlay boxes, toggle, prev/next, swipe) ---------------------
+let lbItems = [], lbIndex = -1;
+let boxesOn = localStorage.getItem('argusBoxes') !== '0';   // default ON, remembered
+const lbBoxCache = {};   // snapshot -> boxes array
+
+function showLightboxAt(j) {
+  if (j < 0 || j >= lbItems.length) return;
+  lbIndex = j;
+  const it = lbItems[j];
+  const img = $('lightbox-img');
+  img.onload = () => drawOverlay(it.snapshot);
+  img.src = '/snapshots/' + it.snapshot;
+  img.classList.toggle('kept-img', !!it.kept);
   $('lightbox-caption').innerHTML =
-    `${it.kept ? '<b style="color:var(--accent)">PINNED</b> · ' : ''}` +
-    `${(it.labels || '').split(',').join(', ')} · ${fmt(it.ts)} · ${i + 1}/${galleryItems.length}`;
-  $('lightbox-img').classList.toggle('kept-img', !!it.kept);
-  // wire the controls to this image
+    `${it.kept ? '<b style="color:var(--green)">PINNED</b> · ' : ''}` +
+    `${(it.labels || '').split(',').join(', ')} · ${fmt(it.ts)} · ${j + 1}/${lbItems.length}`;
   $('lb-download').href = '/snapshots/' + it.snapshot + '?download=1';
   updatePinButton(it.kept);
+  updateBoxesToggle();
+  const multi = lbItems.length > 1;
+  $('lb-prev').hidden = !multi;
+  $('lb-next').hidden = !multi;
   $('lightbox').hidden = false;
 }
+
+async function drawOverlay(snapshot) {
+  const img = $('lightbox-img'), canvas = $('lightbox-canvas');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = img.clientWidth, h = canvas.height = img.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  if (!boxesOn || !img.naturalWidth) return;
+  let boxes = lbBoxCache[snapshot];
+  if (boxes === undefined) {
+    try { boxes = await api('/api/snapshot-boxes?name=' + encodeURIComponent(snapshot)); }
+    catch (e) { boxes = []; }
+    lbBoxCache[snapshot] = boxes;
+  }
+  if (snapshot !== (lbItems[lbIndex] || {}).snapshot) return;   // navigated away
+  const sx = w / img.naturalWidth, sy = h / img.naturalHeight;
+  ctx.lineWidth = 2; ctx.font = '600 13px sans-serif'; ctx.textBaseline = 'bottom';
+  for (const b of boxes) {
+    const col = b.conf >= 0.75 ? '#01BB4E' : b.conf >= 0.5 ? '#F2DF32' : '#F86660';
+    const x = b.x1 * sx, y = b.y1 * sy, bw = (b.x2 - b.x1) * sx, bh = (b.y2 - b.y1) * sy;
+    ctx.strokeStyle = col; ctx.strokeRect(x, y, bw, bh);
+    const tag = `${b.label} ${Math.round(b.conf * 100)}%`;
+    const tw = ctx.measureText(tag).width + 8;
+    ctx.fillStyle = col; ctx.fillRect(x, Math.max(0, y - 16), tw, 16);
+    ctx.fillStyle = '#04200F'; ctx.fillText(tag, x + 4, Math.max(14, y - 2));
+  }
+}
+
+function updateBoxesToggle() {
+  const btn = $('lb-boxes');
+  btn.textContent = 'Boxes: ' + (boxesOn ? 'ON' : 'OFF');
+  btn.classList.toggle('pinned', boxesOn);   // green when on
+}
+$('lb-boxes').addEventListener('click', () => {
+  boxesOn = !boxesOn;
+  localStorage.setItem('argusBoxes', boxesOn ? '1' : '0');
+  updateBoxesToggle();
+  if (lbItems[lbIndex]) drawOverlay(lbItems[lbIndex].snapshot);
+});
 
 function updatePinButton(kept) {
   const btn = $('lb-pin');
   btn.classList.toggle('pinned', !!kept);
-  btn.textContent = kept ? 'Pinned — click to unpin' : 'Pin to permanent';
+  btn.textContent = kept ? 'Pinned' : 'Pin';
 }
-
 $('lb-pin').addEventListener('click', async () => {
-  const it = galleryItems[lightboxIndex];
+  const it = lbItems[lbIndex];
   if (!it) return;
   const newKept = !it.kept;
   await api('/api/keep', {
@@ -368,33 +560,64 @@ $('lb-pin').addEventListener('click', async () => {
   });
   it.kept = newKept ? 1 : 0;
   updatePinButton(it.kept);
-  loadGallery();   // refresh badges underneath (keeps current order)
+  loadGallery();
 });
-
-$('lb-delete').addEventListener('click', () => deleteSnapshot(null, lightboxIndex));
+$('lb-delete').addEventListener('click', async () => {
+  const it = lbItems[lbIndex];
+  if (!it || !confirm('Delete this picture?')) return;
+  await api('/api/snapshot/' + encodeURIComponent(it.snapshot), { method: 'DELETE' });
+  lbItems.splice(lbIndex, 1);
+  loadGallery();
+  if (!lbItems.length) closeLightbox();
+  else showLightboxAt(Math.min(lbIndex, lbItems.length - 1));
+});
 function moveLightbox(delta) {
   if ($('lightbox').hidden) return;
-  const next = lightboxIndex + delta;
-  if (next >= 0 && next < galleryItems.length) showLightbox(next);
+  const next = lbIndex + delta;
+  if (next >= 0 && next < lbItems.length) showLightboxAt(next);
 }
-function closeLightbox() { $('lightbox').hidden = true; lightboxIndex = -1; }
-window.showLightbox = showLightbox;
+function closeLightbox() { $('lightbox').hidden = true; lbIndex = -1; lbItems = []; }
 
-$('lightbox').addEventListener('click', closeLightbox);
-$('lightbox-img').addEventListener('click', e => e.stopPropagation());  // clicking the image won't close
+$('lb-prev').addEventListener('click', e => { e.stopPropagation(); moveLightbox(-1); });
+$('lb-next').addEventListener('click', e => { e.stopPropagation(); moveLightbox(1); });
+$('lightbox').addEventListener('click', closeLightbox);            // tap backdrop closes
+document.querySelector('.lightbox-stage').addEventListener('click', e => e.stopPropagation());
+document.querySelector('.lightbox-controls').addEventListener('click', e => e.stopPropagation());
 document.querySelector('.lightbox-close').addEventListener('click', closeLightbox);
+
+// swipe left/right to change pictures (mobile)
+let touchX = null, touchY = null;
+const stage = document.querySelector('.lightbox-stage');
+stage.addEventListener('touchstart', e => { const t = e.changedTouches[0]; touchX = t.clientX; touchY = t.clientY; }, { passive: true });
+stage.addEventListener('touchend', e => {
+  if (touchX === null) return;
+  const t = e.changedTouches[0], dx = t.clientX - touchX, dy = t.clientY - touchY;
+  touchX = null;
+  if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy)) moveLightbox(dx < 0 ? 1 : -1);
+}, { passive: true });
+
 document.addEventListener('keydown', e => {
   if ($('lightbox').hidden) return;
   if (e.key === 'Escape') closeLightbox();
   else if (e.key === 'ArrowRight') moveLightbox(1);
   else if (e.key === 'ArrowLeft') moveLightbox(-1);
 });
+window.addEventListener('resize', () => {
+  if (!$('lightbox').hidden && lbItems[lbIndex]) drawOverlay(lbItems[lbIndex].snapshot);
+});
 
 $('gallery-form').addEventListener('submit', e => { e.preventDefault(); loadGallery(); });
 $('gallery-refresh').addEventListener('click', loadGallery);
+// keyboard activation for focused gallery tiles
+$('gallery-grid').addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('result')) {
+    e.preventDefault(); e.target.click();
+  }
+});
 
 // --- boot ------------------------------------------------------------------
-pollStatus(); loadLabels().then(syncGalleryFilter); pollAlerts(); loadRules();
+pollStatus(); loadLabels().then(syncGalleryFilter); pollAlerts(); loadRules(); loadActivity();
 setInterval(pollStatus, 2000);
 setInterval(pollAlerts, 3000);
 setInterval(loadLabels, 10000);
+setInterval(loadActivity, 30000);

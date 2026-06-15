@@ -1,5 +1,6 @@
 """SQLite storage layer. One connection per thread (sqlite3 default), guarded
 by a module lock so the capture thread and the web server can share writes."""
+import json
 import sqlite3
 import threading
 import time
@@ -16,6 +17,8 @@ CREATE TABLE IF NOT EXISTS detections (
     source      TEXT    NOT NULL,
     label       TEXT    NOT NULL,
     confidence  REAL    NOT NULL,
+    track_id    INTEGER,                    -- ByteTrack id, or NULL
+    event_id    TEXT,                       -- stable id per object appearance (grouping)
     x1 REAL, y1 REAL, x2 REAL, y2 REAL,    -- bounding box
     snapshot    TEXT                        -- filename in data/snapshots, or NULL
 );
@@ -54,6 +57,13 @@ CREATE TABLE IF NOT EXISTS kept_snapshots (
     ts       REAL NOT NULL,
     note     TEXT
 );
+
+-- box geometry per snapshot (image is saved RAW; boxes are drawn as an overlay
+-- in the browser so they can be toggled on/off).
+CREATE TABLE IF NOT EXISTS snapshot_boxes (
+    snapshot TEXT PRIMARY KEY,
+    boxes    TEXT NOT NULL   -- JSON: [{label, conf, x1, y1, x2, y2}, ...]
+);
 """
 
 
@@ -62,6 +72,14 @@ def init():
     config.SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as c:
         c.executescript(SCHEMA)
+        # migrate older DBs that predate newer columns
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(detections)")}
+        if "track_id" not in cols:
+            c.execute("ALTER TABLE detections ADD COLUMN track_id INTEGER")
+        if "event_id" not in cols:
+            c.execute("ALTER TABLE detections ADD COLUMN event_id TEXT")
+        # index created after migration so the column is guaranteed to exist
+        c.execute("CREATE INDEX IF NOT EXISTS idx_det_event ON detections(event_id)")
 
 
 @contextmanager
@@ -83,8 +101,10 @@ def insert_detections(rows):
         return
     with connect() as c:
         c.executemany(
-            """INSERT INTO detections (ts, source, label, confidence, x1, y1, x2, y2, snapshot)
-               VALUES (:ts, :source, :label, :confidence, :x1, :y1, :x2, :y2, :snapshot)""",
+            """INSERT INTO detections (ts, source, label, confidence, track_id, event_id,
+                                       x1, y1, x2, y2, snapshot)
+               VALUES (:ts, :source, :label, :confidence, :track_id, :event_id,
+                       :x1, :y1, :x2, :y2, :snapshot)""",
             rows,
         )
 
@@ -108,37 +128,52 @@ def search_detections(label=None, start=None, end=None, limit=200):
 
 
 def gallery(label=None, limit=120, pinned=False):
-    """Distinct saved snapshots, newest first, with the object types in each
-    and whether the snapshot is pinned (kept). pinned=True returns only the
-    user's pinned snapshots (driven off kept_snapshots so they show regardless
-    of age or limit on the main view)."""
-    if pinned:
-        q = """SELECT k.snapshot AS snapshot, k.ts AS ts,
-                      GROUP_CONCAT(DISTINCT d.label) AS labels,
-                      COUNT(d.id) AS n, 1 AS kept
-               FROM kept_snapshots k
-               LEFT JOIN detections d ON d.snapshot = k.snapshot
-               GROUP BY k.snapshot ORDER BY k.ts DESC LIMIT :limit"""
-        with connect() as c:
-            return [dict(r) for r in c.execute(q, {"limit": limit}).fetchall()]
+    """Gallery grouped by object appearance. Each row is one object (an event_id,
+    or a lone snapshot when untracked), with its newest snapshot as the tile, a
+    count of how many pictures it has, and whether any are pinned.
 
-    q = """SELECT d.snapshot AS snapshot, MIN(d.ts) AS ts,
-                  GROUP_CONCAT(DISTINCT d.label) AS labels, COUNT(*) AS n,
-                  (k.snapshot IS NOT NULL) AS kept
-           FROM detections d
-           LEFT JOIN kept_snapshots k ON k.snapshot = d.snapshot
-           WHERE d.snapshot IS NOT NULL"""
+    Returns dicts: {gkey, snapshot, ts, labels, n, source, kept}.
+    SQLite's bare-column rule makes `snapshot`/`source` come from the MAX(ts) row,
+    so the tile is the most recent picture of that object."""
+    # MAX(ts) must be the ONLY min/max aggregate here so SQLite makes the bare
+    # columns (snapshot, source) come from the latest row -> newest pic as tile.
+    q = """SELECT COALESCE(event_id, snapshot) AS gkey,
+                  MAX(ts) AS ts,
+                  snapshot AS snapshot,
+                  source AS source,
+                  GROUP_CONCAT(DISTINCT label) AS labels,
+                  COUNT(DISTINCT snapshot) AS n,
+                  (SUM(CASE WHEN snapshot IN (SELECT snapshot FROM kept_snapshots)
+                            THEN 1 ELSE 0 END) > 0) AS kept
+           FROM detections
+           WHERE snapshot IS NOT NULL"""
     params = {}
     if label:
-        # only snapshots that contain this label, but still list all their labels
-        q += """ AND d.snapshot IN (
-                    SELECT snapshot FROM detections
+        q += """ AND COALESCE(event_id, snapshot) IN (
+                    SELECT COALESCE(event_id, snapshot) FROM detections
                     WHERE label = :label AND snapshot IS NOT NULL)"""
         params["label"] = label
-    q += " GROUP BY d.snapshot ORDER BY ts DESC LIMIT :limit"
+    q += " GROUP BY gkey"
+    if pinned:
+        q += " HAVING kept = 1"
+    q += " ORDER BY ts DESC LIMIT :limit"
     params["limit"] = limit
     with connect() as c:
         return [dict(r) for r in c.execute(q, params).fetchall()]
+
+
+def gallery_group(gkey, limit=500):
+    """All snapshots belonging to one object group (event_id or lone snapshot),
+    oldest first, for the expanded view."""
+    q = """SELECT d.snapshot AS snapshot, MIN(d.ts) AS ts,
+                  GROUP_CONCAT(DISTINCT d.label) AS labels,
+                  MAX(CASE WHEN d.snapshot IN (SELECT snapshot FROM kept_snapshots)
+                           THEN 1 ELSE 0 END) AS kept
+           FROM detections d
+           WHERE COALESCE(d.event_id, d.snapshot) = :gkey AND d.snapshot IS NOT NULL
+           GROUP BY d.snapshot ORDER BY ts ASC LIMIT :limit"""
+    with connect() as c:
+        return [dict(r) for r in c.execute(q, {"gkey": gkey, "limit": limit}).fetchall()]
 
 
 def label_summary():
@@ -148,6 +183,21 @@ def label_summary():
             "SELECT label, COUNT(*) n, MAX(ts) last_seen FROM detections GROUP BY label ORDER BY n DESC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def activity(hours=24, buckets=24):
+    """Detection counts bucketed over the last `hours`, for the timeline chart.
+    Returns {start, width_s, counts:[...]} with zero-filled buckets."""
+    now = time.time()
+    start = now - hours * 3600
+    width = (hours * 3600) / buckets
+    counts = [0] * buckets
+    with connect() as c:
+        for r in c.execute("SELECT ts FROM detections WHERE ts >= ?", (start,)):
+            i = int((r["ts"] - start) / width)
+            if 0 <= i < buckets:
+                counts[i] += 1
+    return {"start": start, "width_s": width, "counts": counts}
 
 
 # --- Alert rules -----------------------------------------------------------
@@ -237,11 +287,33 @@ def list_kept():
         return {r["snapshot"] for r in c.execute("SELECT snapshot FROM kept_snapshots").fetchall()}
 
 
+def save_snapshot_boxes(snapshot, boxes):
+    """Store the box geometry for a (raw) snapshot, for the gallery overlay."""
+    with connect() as c:
+        c.execute("INSERT OR REPLACE INTO snapshot_boxes (snapshot, boxes) VALUES (?, ?)",
+                  (snapshot, json.dumps(boxes)))
+
+
+def get_snapshot_boxes(snapshot):
+    with connect() as c:
+        r = c.execute("SELECT boxes FROM snapshot_boxes WHERE snapshot=?", (snapshot,)).fetchone()
+        return json.loads(r["boxes"]) if r else []
+
+
+def delete_group(gkey):
+    """Delete every snapshot belonging to one object group. Returns the count."""
+    snaps = [r["snapshot"] for r in gallery_group(gkey)]
+    for s in snaps:
+        delete_snapshot(s)
+    return len(snaps)
+
+
 def delete_snapshot(snapshot):
     """Delete a snapshot everywhere: its detection rows, alert refs, pin, and file."""
     with connect() as c:
         c.execute("DELETE FROM detections WHERE snapshot=?", (snapshot,))
         c.execute("DELETE FROM kept_snapshots WHERE snapshot=?", (snapshot,))
+        c.execute("DELETE FROM snapshot_boxes WHERE snapshot=?", (snapshot,))
         c.execute("UPDATE alerts SET snapshot=NULL WHERE snapshot=?", (snapshot,))
     path = config.SNAPSHOT_DIR / snapshot
     if path.exists() and ".." not in snapshot and "/" not in snapshot:
@@ -290,3 +362,22 @@ def cleanup(retention_days):
                 except OSError:
                     pass
     return {"detections_deleted": det, "alerts_deleted": alr, "files_deleted": removed_files}
+
+
+def cleanup_by_count(max_snapshots):
+    """Keep only the newest `max_snapshots` snapshots; delete older ones (pinned
+    snapshots are exempt and don't count toward the cap). 0 = no cap. Returns the
+    number of snapshots deleted."""
+    if not max_snapshots or max_snapshots <= 0:
+        return 0
+    with connect() as c:
+        snaps = c.execute(
+            "SELECT snapshot, MAX(ts) AS ts FROM detections WHERE snapshot IS NOT NULL "
+            "GROUP BY snapshot ORDER BY ts DESC"
+        ).fetchall()
+    kept = list_kept()
+    unpinned = [s["snapshot"] for s in snaps if s["snapshot"] not in kept]
+    over = unpinned[max_snapshots:]
+    for name in over:
+        delete_snapshot(name)
+    return len(over)

@@ -1,8 +1,9 @@
-"""Background capture + detection worker.
+"""Background capture + detection worker (one per camera).
 
-Runs in its own thread: grabs frames from the camera, throttles YOLO inference,
-writes detections to the DB, saves periodic annotated snapshots, evaluates alert
-rules, and keeps the latest annotated frame (as JPEG bytes) for the web stream."""
+Each worker runs in its own thread: grabs frames, throttles YOLO inference,
+tracks objects, logs detections (once per appearance when tracking is on),
+saves annotated snapshots, evaluates alert rules, and keeps the latest annotated
+frame (JPEG) for the web stream."""
 import threading
 import time
 
@@ -11,21 +12,50 @@ import cv2
 from . import alerts, config, db
 from .detector import Detector
 
+# Box colors by confidence (BGR), from the Argus palette.
+_COL_HIGH = (78, 187, 1)     # green  #01BB4E   (>= 0.75)
+_COL_MED = (50, 223, 242)    # yellow #F2DF32   (>= 0.50)
+_COL_LOW = (96, 102, 248)    # red    #F86660   (< 0.50)
+
+
+def _conf_color(c):
+    if c >= 0.75:
+        return _COL_HIGH
+    if c >= 0.50:
+        return _COL_MED
+    return _COL_LOW
+
+
+# Global toggle for drawing boxes on the live feed (snapshots keep them regardless).
+_show_boxes = True
+
+
+def set_show_boxes(on):
+    global _show_boxes
+    _show_boxes = bool(on)
+
+
+def get_show_boxes():
+    return _show_boxes
+
 
 class CameraWorker:
-    def __init__(self):
+    def __init__(self, source=None):
         self.detector = None
         self.cap = None
-        self.source = str(config.SOURCE)
+        self.source = str(source if source is not None else config.SOURCE)
         self._thread = None
         self._stop = threading.Event()
         self._frame_lock = threading.Lock()
         self._latest_jpeg = None
+        self._seen = {}            # track_id -> last-seen ts (for log dedup)
         self.status = {
             "running": False,
             "paused": False,
             "source": self.source,
             "model": config.MODEL,
+            "device": config.DEVICE,
+            "tracking": config.TRACK,
             "error": None,
             "fps": 0.0,
             "last_detection_count": 0,
@@ -65,15 +95,15 @@ class CameraWorker:
         self.start()
 
     def set_source(self, source):
-        """Switch the video input at runtime: stop, swap source, restart."""
+        """Switch this worker's video input at runtime: stop, swap, restart."""
         self.stop()
         self.source = str(source)
-        config.SOURCE = self.source            # keep config in sync for snapshots/logs
         self.status["source"] = self.source
         self.status["error"] = None
         self.status["fps"] = 0.0
+        self._seen.clear()
         with self._frame_lock:
-            self._latest_jpeg = None           # drop the stale last frame
+            self._latest_jpeg = None
         self.start()
         return self.source
 
@@ -81,6 +111,8 @@ class CameraWorker:
     def _run(self):
         try:
             self.detector = Detector()
+            self.status["device"] = self.detector.device
+            self.status["tracking"] = self.detector.track
         except Exception as e:  # model load failure
             self.status["error"] = f"model load failed: {e}"
             return
@@ -91,7 +123,7 @@ class CameraWorker:
             self.status["error"] = (
                 f"could not open camera source {src!r}. "
                 "Check the camera is connected and not in use by another app, "
-                "and that Terminal has camera permission in System Settings > Privacy."
+                "and that the app has camera permission in System Settings > Privacy."
             )
             return
 
@@ -112,7 +144,6 @@ class CameraWorker:
             frames += 1
             now = time.time()
 
-            # FPS (rolling, updated ~1/sec)
             if now - last_fps_t >= 1.0:
                 self.status["fps"] = round(frames / (now - last_fps_t), 1)
                 frames = 0
@@ -124,48 +155,93 @@ class CameraWorker:
                 last_detections = detections
                 self.status["last_detection_count"] = len(detections)
 
-                if detections:
-                    drawn = self._draw(frame, detections)  # frame with boxes, for snapshots
-                    snapshot_name = None
-                    if now - last_snapshot >= config.SNAPSHOT_INTERVAL:
-                        last_snapshot = now
-                        snapshot_name = self._save_snapshot(drawn, now)
+                to_log = self._select_to_log(detections, now)
 
-                    rows = [{
-                        "ts": now, "source": self.source,
-                        "label": d["label"], "confidence": d["confidence"],
-                        "x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"],
-                        "snapshot": snapshot_name,
-                    } for d in detections]
-                    db.insert_detections(rows)
-                    # Save an alert snapshot lazily — only if a rule actually fires,
-                    # reusing this cycle's snapshot if we already wrote one.
+                if detections:
+                    # Snapshots are saved RAW (no boxes); the box geometry is stored
+                    # alongside so the gallery can overlay + toggle boxes in the browser.
+                    snapshot_name = None
+                    if to_log and now - last_snapshot >= config.SNAPSHOT_INTERVAL:
+                        last_snapshot = now
+                        snapshot_name = self._save_snapshot(frame, now, detections)
+
+                    if to_log:
+                        rows = [{
+                            "ts": now, "source": self.source,
+                            "label": d["label"], "confidence": d["confidence"],
+                            "track_id": d.get("track_id"), "event_id": d.get("event_id"),
+                            "x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"],
+                            "snapshot": snapshot_name,
+                        } for d in to_log]
+                        db.insert_detections(rows)
+
+                    # Alerts evaluate on ALL current detections (cooldown stops spam);
+                    # the snapshot is saved lazily only if a rule actually fires.
                     cache = {"name": snapshot_name}
 
                     def save_alert_snapshot():
                         if cache["name"] is None:
-                            cache["name"] = self._save_snapshot(drawn, now)
+                            cache["name"] = self._save_snapshot(frame, now, detections)
                         return cache["name"]
 
-                    alerts.evaluate(detections, save_alert_snapshot, now=now)
+                    alerts.evaluate(detections, save_alert_snapshot, now=now, source=self.source)
 
-            # Redraw the latest boxes on EVERY frame so they stay visible and
-            # move smoothly between detection cycles (no flicker).
-            self._publish(self._draw(frame, last_detections))
+            # Boxes on the live feed are toggleable; snapshots above always keep them.
+            display = self._draw(frame, last_detections) if _show_boxes else frame
+            self._publish(display)
 
         self.status["running"] = False
         if self.cap:
             self.cap.release()
 
+    def _cadence_for(self, age):
+        """Snapshot interval (seconds) based on how long an object has been in
+        frame, or None to stop logging it."""
+        if age < config.DWELL_TIER_1:
+            return config.PERSIST_INTERVAL    # every 2s for the first minute
+        if age < config.DWELL_TIER_2:
+            return 60.0                       # 1/min until 10 min
+        if age < config.DWELL_TIER_3:
+            return 3600.0                     # 1/hour until 1 hour
+        return None                           # after 1 hour: ignore until it leaves
+
+    def _select_to_log(self, detections, now):
+        """With tracking on, log each object on an adaptive cadence that slows the
+        longer it lingers (see _cadence_for). Each object appearance gets a stable
+        event_id so all its snapshots can be grouped later. Without tracking, log
+        all detections (throttled by detection cycle)."""
+        if not config.TRACK:
+            return [dict(d, event_id=None) for d in detections]
+        to_log = []
+        for d in detections:
+            tid = d.get("track_id")
+            if tid is None:
+                continue   # tracker hasn't locked on yet; it'll log once it assigns an id
+            st = self._seen.get(tid)
+            if st is None:   # new appearance -> new event group
+                st = {"t0": now, "last": 0.0, "seen": now,
+                      "event": f"{self.source}-{tid}-{int(now * 1000)}"}
+                self._seen[tid] = st
+            st["seen"] = now
+            cadence = self._cadence_for(now - st["t0"])
+            if cadence is not None and now - st["last"] >= cadence:
+                st["last"] = now
+                to_log.append(dict(d, event_id=st["event"]))
+        # forget tracks that have left the scene (so a re-entry starts fresh)
+        gone = [t for t, s in self._seen.items() if now - s["seen"] > config.LEAVE_GAP]
+        for t in gone:
+            self._seen.pop(t, None)
+        return to_log
+
     # --- helpers -----------------------------------------------------------
     def _draw(self, frame, detections):
-        """Draw bounding boxes + labels onto a copy of the frame."""
+        """Draw bounding boxes + labels (color-coded by confidence)."""
         if not detections:
             return frame
         img = frame.copy()
-        color = (80, 220, 100)  # BGR green
         for d in detections:
             x1, y1, x2, y2 = int(d["x1"]), int(d["y1"]), int(d["x2"]), int(d["y2"])
+            color = _conf_color(d["confidence"])
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             label = f'{d["label"]} {d["confidence"] * 100:.0f}%'
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
@@ -174,10 +250,16 @@ class CameraWorker:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1, cv2.LINE_AA)
         return img
 
-    def _save_snapshot(self, frame, ts):
+    def _save_snapshot(self, frame, ts, detections):
+        """Save the RAW frame and persist its box geometry separately so the
+        gallery can overlay (and toggle) boxes in the browser."""
         name = f"{int(ts * 1000)}.jpg"
-        path = config.SNAPSHOT_DIR / name
-        cv2.imwrite(str(path), frame)
+        cv2.imwrite(str(config.SNAPSHOT_DIR / name), frame)
+        db.save_snapshot_boxes(name, [{
+            "label": d["label"], "conf": round(d["confidence"], 3),
+            "x1": round(d["x1"]), "y1": round(d["y1"]),
+            "x2": round(d["x2"]), "y2": round(d["y2"]),
+        } for d in detections])
         return name
 
     def _publish(self, frame):
@@ -200,6 +282,3 @@ class CameraWorker:
                        + f"Content-Length: {len(jpeg)}\r\n\r\n".encode()
                        + jpeg + b"\r\n")
             time.sleep(0.04)  # ~25 fps cap on the stream
-
-
-worker = CameraWorker()

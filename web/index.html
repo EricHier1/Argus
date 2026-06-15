@@ -14,49 +14,53 @@
       <button class="tab-btn" data-tab="gallery" title="Shortcut: 2">Gallery <kbd>2</kbd></button>
     </nav>
     <div id="status" class="status">connecting…</div>
-    <button id="menu-btn" class="menu-btn" aria-label="Settings menu" title="Settings"><span></span></button>
+    <button id="menu-btn" class="menu-btn" aria-label="Settings menu" aria-haspopup="true" aria-expanded="false" title="Settings"><span></span></button>
   </header>
 
   <div id="menu-panel" class="menu-panel" hidden>
-    <h3>Detection</h3>
-    <button id="power-toggle" class="power on">Detection: ON — click to turn off</button>
-    <p class="hint">Off releases the camera and uses no CPU. Your saved detections
-      and snapshots stay searchable while it's off.</p>
+    <button id="power-toggle" class="power on" title="Double-click to confirm">Detection ON</button>
 
+    <h3>Cameras</h3>
+    <div id="active-cameras" class="device-list"><span class="muted">loading…</span></div>
     <div class="src-header">
-      <h3>Video source</h3>
+      <h4>Add camera</h4>
       <button id="rescan" class="ghost" type="button">Rescan</button>
     </div>
     <div id="device-list" class="device-list"><span class="muted">loading…</span></div>
-    <label class="custom-source">Or a custom source (camera index or stream URL)
-      <input id="custom-source" placeholder="e.g. 1  or  http://192.168.1.50:4747/video">
-    </label>
-    <button id="apply-source">Switch source</button>
-    <p class="hint">Switching restarts the camera. For your phone, run an IP-camera
-      app (e.g. DroidCam) and paste its stream URL.</p>
+    <input id="custom-source" placeholder="camera index or stream URL">
+    <button id="add-camera">Add camera</button>
 
-    <h3>Storage cleanup</h3>
-    <label>Auto-delete data older than
-      <select id="retention">
-        <option value="0">Never (keep everything)</option>
-        <option value="1">1 day</option>
-        <option value="3">3 days</option>
-        <option value="7">7 days</option>
-        <option value="14">14 days</option>
-        <option value="30">30 days</option>
-        <option value="90">90 days</option>
-      </select>
-    </label>
+    <h3>Storage</h3>
+    <div class="row">
+      <label>Auto-delete after
+        <select id="retention">
+          <option value="0">Never</option>
+          <option value="1">1 day</option>
+          <option value="3">3 days</option>
+          <option value="7">7 days</option>
+          <option value="14">14 days</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+        </select>
+      </label>
+      <label>Max snapshots
+        <input id="max-snapshots" type="number" min="0" step="100" placeholder="0">
+      </label>
+    </div>
     <button id="clean-now" class="ghost" type="button">Clean now</button>
-    <p id="cleanup-status" class="hint">Pinned snapshots are never deleted.</p>
+    <p id="cleanup-status" class="hint"></p>
+
+    <h3>Server</h3>
+    <button id="shutdown" class="power danger-btn" type="button" title="Double-click to confirm">Shut down</button>
   </div>
 
   <main id="tab-dashboard" class="tab-view active">
     <section class="panel feed">
-      <h2>Live feed</h2>
-      <div class="video-wrap">
-        <img id="stream" src="/stream" alt="live feed">
+      <div class="panel-head">
+        <h2>Live feed</h2>
+        <button id="boxes-toggle" class="ghost" type="button" aria-pressed="true">Boxes: ON</button>
       </div>
+      <div id="feed-grid" class="feed-grid"><span class="muted">Connecting to camera…</span></div>
       <div id="live-detections" class="chips"></div>
     </section>
 
@@ -85,6 +89,11 @@
       </form>
       <p class="hint">Leave hours blank for "any time". A window like 22 to 6 means 10pm to 6am.</p>
       <div id="rules-list" class="list"></div>
+    </section>
+
+    <section class="panel activity">
+      <h2>Activity — last 24h</h2>
+      <canvas id="activity-chart" height="90"></canvas>
     </section>
 
     <section class="panel search">
@@ -124,14 +133,19 @@
   </main>
 
   <div id="lightbox" class="lightbox" hidden>
-    <span class="lightbox-close">&times;</span>
-    <img id="lightbox-img" src="" alt="snapshot">
+    <span class="lightbox-close" role="button" aria-label="Close">&times;</span>
+    <button class="lb-nav prev" id="lb-prev" aria-label="Previous picture">&lsaquo;</button>
+    <button class="lb-nav next" id="lb-next" aria-label="Next picture">&rsaquo;</button>
+    <div class="lightbox-stage">
+      <img id="lightbox-img" src="" alt="snapshot">
+      <canvas id="lightbox-canvas"></canvas>
+    </div>
     <div id="lightbox-caption" class="lightbox-caption"></div>
     <div class="lightbox-controls">
+      <button id="lb-boxes" class="lb-btn" type="button">Boxes: ON</button>
       <a id="lb-download" class="lb-btn" download>Download</a>
-      <button id="lb-pin" class="lb-btn">Pin to permanent</button>
+      <button id="lb-pin" class="lb-btn">Pin</button>
       <button id="lb-delete" class="lb-btn danger">Delete</button>
-      <span class="muted">Arrow keys to browse · Esc to close</span>
     </div>
   </div>
 
