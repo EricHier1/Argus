@@ -1,5 +1,5 @@
 // Dashboard widgets: detection labels, alerts feed, alert rules, search, activity.
-import { $, fmt, api, postJSON, toEpoch } from './api.js';
+import { $, fmt, api, postJSON, toEpoch, armConfirm } from './api.js';
 import { syncGalleryFilter, openLightboxItems, sentinelNear } from './gallery.js';
 
 // --- labels (populate filters + datalist) ----------------------------------
@@ -110,6 +110,19 @@ $('alerts-grid').addEventListener('click', (e) => {
   const t = e.target.closest('[data-i]');
   if (t && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); t.click(); }
 }));
+
+// When captures are deleted elsewhere (e.g. the gallery), refresh the alert views
+// so deleted pictures don't linger in the Alerts panel/tab.
+document.addEventListener('argus:changed', () => {
+  pollAlerts();   // refresh dashboard panel + total count
+  if ($('tab-alerts').classList.contains('active')) loadAlertsTab();
+});
+
+armConfirm($('alerts-delete-all'), 'Click again to delete ALL', async () => {
+  await api('/api/alerts/all', { method: 'DELETE' });
+  loadAlertsTab();
+  pollAlerts();
+});
 
 // --- rules (event-delegated) -----------------------------------------------
 export async function loadRules() {

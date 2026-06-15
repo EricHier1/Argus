@@ -163,6 +163,42 @@ main {
 /* activity chart */
 .activity canvas { width: 100%; display: block; }
 
+/* quad + single fill the ENTIRE viewport (break out of the 1400px content cap) */
+#tab-quad.tab-view.active, #tab-single.tab-view.active {
+  display: block; max-width: none; margin: 0; padding: 8px;
+}
+#tab-quad > .panel, #tab-single > .panel {
+  display: flex; flex-direction: column; height: calc(100dvh - 68px); padding: 10px;
+}
+.quad-grid {
+  flex: 1; min-width: 0; min-height: 0; display: grid; gap: 8px;
+  grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--rows, 1), minmax(0, 1fr));
+}
+.quad-cell {
+  position: relative; background: #000; border-radius: var(--radius-sm);
+  overflow: hidden; border: 1px solid var(--line); min-width: 0; min-height: 0;
+}
+.quad-cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.quad-tag {
+  position: absolute; left: 8px; bottom: 8px; font-size: 12px; font-weight: 600;
+  background: rgba(0, 0, 0, .55); color: #fff; padding: 2px 8px; border-radius: 4px;
+}
+
+/* single full-screen camera view */
+.single-stage {
+  position: relative; background: #000; border-radius: var(--radius-sm);
+  overflow: hidden; display: flex; align-items: center; justify-content: center;
+  flex: 1; min-width: 0; min-height: 0;
+}
+.single-stage img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.single-overlay { position: absolute; top: 10px; right: 10px; z-index: 3; display: flex; gap: 8px; }
+/* CSS-based fullscreen (works on iOS Safari, unlike native on <img>) */
+.single-stage.fs {
+  position: fixed; inset: 0; z-index: 200; border-radius: 0; background: #000;
+}
+.single-stage.fs img { max-height: 100dvh; }
+
 .chips { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   background: var(--surface); border: 1px solid var(--line);
@@ -201,6 +237,15 @@ button:hover { background: var(--green-2); }
 button.ghost { background: transparent; border: 1px solid var(--green); color: var(--green); padding: 5px 12px; font-weight: 600; }
 button.ghost:hover { background: rgba(1, 187, 78, .12); }
 button.arm { background: var(--alert); color: #fff; }   /* double-click confirm state */
+button.danger-ghost { border-color: var(--alert); color: var(--alert); }
+button.danger-ghost:hover { background: rgba(248, 102, 96, .12); }
+button.danger-ghost.arm { background: var(--alert); color: #fff; border-color: var(--alert); }
+
+/* editable camera name in the menu */
+.active-cam .cam-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.cam-rename { background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); padding: 5px 8px; font-size: 13px; width: 100%; }
+.cam-rename:focus { outline: none; border-color: var(--green); }
+.active-cam .cam-sub { font-size: 11px; }
 
 /* --- 9. Gallery ----------------------------------------------------------- */
 .gallery-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
@@ -315,8 +360,13 @@ button:focus-visible, .result:focus-visible, input:focus-visible, select:focus-v
 @media (max-width: 640px) {
   header { gap: 8px; padding: 10px 12px; flex-wrap: wrap; }
   h1 { font-size: 16px; }
-  nav.tabs { order: 3; width: 100%; }
-  .tab-btn { flex: 1; text-align: center; }
+  /* tabs become a horizontal swipe strip so all fit without rotating */
+  nav.tabs {
+    order: 3; width: 100%; flex-wrap: nowrap; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none; padding-bottom: 2px;
+  }
+  nav.tabs::-webkit-scrollbar { display: none; }
+  .tab-btn { flex: 0 0 auto; white-space: nowrap; }
   .tab-btn kbd { display: none; }              /* shortcuts are desktop-only */
   .status { order: 2; font-size: 11px; }
   .menu-btn { order: 1; }
@@ -333,6 +383,7 @@ button:focus-visible, .result:focus-visible, input:focus-visible, select:focus-v
   .results { grid-template-columns: repeat(auto-fill, minmax(44vw, 1fr)); }
   .result img { height: 90px; }
   .analytics-cols { grid-template-columns: 1fr; gap: 12px; }
+  #tab-quad > .panel, #tab-single > .panel { height: calc(100dvh - 150px); }
 
   /* bigger tap targets */
   button, .lb-btn { padding: 11px 16px; font-size: 14px; }

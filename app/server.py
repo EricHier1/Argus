@@ -13,6 +13,9 @@ from .manager import manager
 async def lifespan(app: FastAPI):
     db.init()
     manager.start()
+    # honor the remembered detection on/off state across restarts
+    if db.get_setting("paused", "0") == "1":
+        manager.pause_all()
     maintenance.start()
     yield
     maintenance.stop()
@@ -51,8 +54,14 @@ def frame(source: str = Query(None)):
 
 @app.get("/api/status")
 def status():
-    """Status for every active camera, plus the live-box toggle state."""
-    return {"cameras": manager.statuses(), "show_boxes": capture.get_show_boxes()}
+    """Status for every active camera (with custom names), plus the box toggle."""
+    names = db.get_camera_names()
+    cams = []
+    for s in manager.statuses():
+        c = dict(s)
+        c["name"] = names.get(str(c["source"]))
+        cams.append(c)
+    return {"cameras": cams, "show_boxes": capture.get_show_boxes()}
 
 
 @app.post("/api/boxes")
@@ -75,14 +84,16 @@ def power(payload: dict):
         w.resume() if on else w.pause()
     else:
         manager.resume_all() if on else manager.pause_all()
+        db.set_setting("paused", "0" if on else "1")   # remember across restarts
     return {"cameras": manager.statuses()}
 
 
 # --- camera management -----------------------------------------------------
 @app.get("/api/devices")
 def list_devices():
-    """Detected cameras on this machine, plus the sources currently in use."""
-    return {"devices": devices.list_cameras(), "active": manager.sources()}
+    """Detected cameras on this machine, the sources in use, and custom names."""
+    return {"devices": devices.list_cameras(), "active": manager.sources(),
+            "names": db.get_camera_names()}
 
 
 @app.post("/api/cameras")
@@ -101,6 +112,16 @@ def remove_camera(payload: dict):
     source = str(payload.get("source", "")).strip()
     removed = manager.remove(source)
     return {"ok": removed, "active": manager.sources()}
+
+
+@app.post("/api/cameras/name")
+def name_camera(payload: dict):
+    """Set (or clear, if blank) a custom display name for a camera source."""
+    source = str(payload.get("source", "")).strip()
+    if not source:
+        return JSONResponse({"error": "source required"}, status_code=400)
+    db.set_camera_name(source, payload.get("name", ""))
+    return {"ok": True, "names": db.get_camera_names()}
 
 
 @app.get("/api/activity")
@@ -164,6 +185,18 @@ def snapshot_boxes(name: str = Query(...)):
 def delete_gallery_group(gkey: str = Query(...)):
     """Delete all snapshots belonging to one object group."""
     return {"ok": True, "deleted": db.delete_group(gkey)}
+
+
+@app.delete("/api/gallery/all")
+def delete_all_gallery():
+    """Delete the entire gallery (all detections + their snapshots)."""
+    return db.delete_all_gallery()
+
+
+@app.delete("/api/alerts/all")
+def delete_all_alerts():
+    """Delete every alert."""
+    return db.delete_all_alerts()
 
 
 # --- storage settings, pinning, cleanup ------------------------------------

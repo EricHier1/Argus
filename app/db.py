@@ -305,6 +305,69 @@ def set_setting(key, value):
         )
 
 
+# --- Camera names ----------------------------------------------------------
+def get_camera_names():
+    """{source: custom name} dict."""
+    raw = get_setting("camera_names", "{}")
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def set_camera_name(source, name):
+    names = get_camera_names()
+    source = str(source)
+    name = (name or "").strip()
+    if name:
+        names[source] = name
+    else:
+        names.pop(source, None)
+    set_setting("camera_names", json.dumps(names))
+
+
+# --- Bulk delete -----------------------------------------------------------
+def _prune_orphan_files(referenced):
+    removed = 0
+    if config.SNAPSHOT_DIR.exists():
+        for f in config.SNAPSHOT_DIR.iterdir():
+            if f.name not in referenced:
+                try:
+                    f.unlink(); removed += 1
+                except OSError:
+                    pass
+    return removed
+
+
+def delete_all_gallery():
+    """Delete every detection + its snapshot (the whole gallery). Alert pictures
+    that were shared with the gallery are unlinked; alert-only pics are kept."""
+    with connect() as c:
+        n = c.execute("SELECT COUNT(*) FROM detections").fetchone()[0]
+        gal = [r["snapshot"] for r in c.execute(
+            "SELECT DISTINCT snapshot FROM detections WHERE snapshot IS NOT NULL")]
+        c.execute("DELETE FROM detections")
+        c.execute("DELETE FROM snapshot_boxes")
+        c.execute("DELETE FROM kept_snapshots")
+        for s in gal:
+            c.execute("UPDATE alerts SET snapshot=NULL WHERE snapshot=?", (s,))
+        ref = {r["snapshot"] for r in c.execute(
+            "SELECT DISTINCT snapshot FROM alerts WHERE snapshot IS NOT NULL")}
+    return {"detections_deleted": n, "files_deleted": _prune_orphan_files(ref)}
+
+
+def delete_all_alerts():
+    """Delete every alert. Snapshot files referenced only by alerts are removed;
+    gallery pictures (referenced by detections) are kept."""
+    with connect() as c:
+        n = c.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+        c.execute("DELETE FROM alerts")
+        ref = {r["snapshot"] for r in c.execute(
+            "SELECT DISTINCT snapshot FROM detections WHERE snapshot IS NOT NULL")}
+        ref |= {r["snapshot"] for r in c.execute("SELECT snapshot FROM kept_snapshots")}
+    return {"alerts_deleted": n, "files_deleted": _prune_orphan_files(ref)}
+
+
 # --- Pinned (kept) snapshots ----------------------------------------------
 def set_kept(snapshot, kept, note=None):
     with connect() as c:

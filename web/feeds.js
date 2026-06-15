@@ -1,22 +1,35 @@
 // Live camera feeds, status bar, and the power / boxes toggles.
-import { $, api, postJSON } from './api.js';
+import { $, api, postJSON, camLabel } from './api.js';
 
 let renderedSources = null;   // null forces the first render even with 0 cameras
 let feedGen = 0;              // bumped on every rebuild so old frame-pumps stop
-const FRAME_MS = 120;        // ~8 fps live view (polled JPEG, works on every browser)
+let dashCams = [];            // last cameras rendered into the dashboard feed
+export const FRAME_MS = 120;  // ~8 fps live view (polled JPEG, works on every browser)
 
 export function forceFeedRebuild() { renderedSources = null; }
+export const isActive = (tabId) => {
+  const el = document.getElementById(tabId);
+  return !!(el && el.classList.contains('active'));
+};
 
-// Continuously poll the latest JPEG for one camera and swap it into the <img>.
-// Replaces MJPEG (multipart/x-mixed-replace), which iOS Safari renders unreliably.
-function pumpFrames(img, source, gen) {
+// Click a dashboard feed -> open that camera in the View tab.
+$('feed-grid').addEventListener('click', (e) => {
+  const card = e.target.closest('.feed-card[data-source]');
+  if (card) document.dispatchEvent(new CustomEvent('argus:viewcam',
+    { detail: { source: decodeURIComponent(card.dataset.source) } }));
+});
+
+// Continuously poll the latest JPEG for one camera into the <img>, while alive()
+// is true. Replaces MJPEG, which iOS Safari renders unreliably. `alive` lets a
+// view stop polling when its tab is hidden (saves bandwidth).
+export function pumpFrame(img, source, alive) {
   let curUrl = null;
-  const schedule = (ms) => { if (gen === feedGen) setTimeout(tick, ms); };
+  const schedule = (ms) => { if (alive()) setTimeout(tick, ms); else if (curUrl) URL.revokeObjectURL(curUrl); };
   async function tick() {
-    if (gen !== feedGen) { if (curUrl) URL.revokeObjectURL(curUrl); return; }
+    if (!alive()) { if (curUrl) URL.revokeObjectURL(curUrl); return; }
     try {
       const r = await fetch(`/frame?source=${encodeURIComponent(source)}&t=${Date.now()}`, { cache: 'no-store' });
-      if (gen !== feedGen) { if (curUrl) URL.revokeObjectURL(curUrl); return; }
+      if (!alive()) { if (curUrl) URL.revokeObjectURL(curUrl); return; }
       if (r.ok) {
         const url = URL.createObjectURL(await r.blob());
         img.src = url;
@@ -47,23 +60,31 @@ export async function pollStatus() {
   }
 }
 
+function startDashPumps() {
+  feedGen++;
+  const g = feedGen;
+  $('feed-grid').querySelectorAll('.feed-card img').forEach((img, i) =>
+    pumpFrame(img, dashCams[i].source, () => g === feedGen && isActive('tab-dashboard')));
+}
+// re-pump the dashboard feed after returning to the Dashboard tab
+export function resumeDashFeeds() { if (dashCams.length) startDashPumps(); }
+
 function renderFeeds(cameras) {
+  dashCams = cameras;
   const grid = $('feed-grid');
   grid.classList.toggle('multi', cameras.length > 1);
-  // Only rebuild <img> elements when the set of sources changes, so existing
-  // MJPEG streams aren't torn down on every poll.
+  // Only rebuild <img> elements when the set of sources changes.
   const key = cameras.map(c => c.source).join('|');
   if (key !== renderedSources) {
     renderedSources = key;
-    feedGen++;   // stop frame-pumps from the previous layout
     grid.innerHTML = cameras.length ? cameras.map(c => `
-      <div class="feed-card">
-        <div class="feed-video"><img alt="camera ${c.source}"></div>
-        <div class="feed-cap"><span class="feed-name">cam ${c.source}</span><span class="feed-stat muted"></span></div>
+      <div class="feed-card" data-source="${encodeURIComponent(c.source)}" title="Open in View tab">
+        <div class="feed-video"><img alt="${camLabel(c)}"></div>
+        <div class="feed-cap"><span class="feed-name">${camLabel(c)}</span><span class="feed-stat muted"></span></div>
       </div>`).join('')
       : '<span class="muted">No cameras. Add one from the settings menu.</span>';
-    const myGen = feedGen;
-    grid.querySelectorAll('.feed-card img').forEach((img, i) => pumpFrames(img, cameras[i].source, myGen));
+    if (cameras.length) startDashPumps();
+    else feedGen++;
   }
   const cards = grid.querySelectorAll('.feed-card');
   cameras.forEach((c, i) => {

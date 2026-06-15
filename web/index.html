@@ -14,6 +14,8 @@
       <button class="tab-btn" data-tab="gallery" title="Shortcut: 2">Gallery <kbd>2</kbd></button>
       <button class="tab-btn" data-tab="alerts" title="Shortcut: 3">Alerts <kbd>3</kbd></button>
       <button class="tab-btn" data-tab="analytics" title="Shortcut: 4">Analytics <kbd>4</kbd></button>
+      <button class="tab-btn" data-tab="quad" title="Shortcut: 5">Quad <kbd>5</kbd></button>
+      <button class="tab-btn" data-tab="single" title="Shortcut: 6">View <kbd>6</kbd></button>
     </nav>
     <div id="status" class="status">connecting…</div>
     <button id="menu-btn" class="menu-btn" aria-label="Settings menu" aria-haspopup="true" aria-expanded="false" title="Settings"><span></span></button>
@@ -23,6 +25,7 @@
     <button id="power-toggle" class="power on" title="Double-click to confirm">Detection ON</button>
 
     <h3>Cameras</h3>
+    <h4>Active</h4>
     <div id="active-cameras" class="device-list"><span class="muted">loading…</span></div>
     <div class="src-header">
       <h4>Add camera</h4>
@@ -132,6 +135,7 @@
         </label>
         <button type="submit">Apply</button>
         <button type="button" id="gallery-refresh" class="ghost">Refresh</button>
+        <button type="button" id="gallery-delete-all" class="ghost danger-ghost">Delete all</button>
       </form>
       <div id="gallery-grid" class="results"></div>
       <div id="gallery-sentinel" class="sentinel"></div>
@@ -140,7 +144,10 @@
 
   <main id="tab-alerts" class="tab-view">
     <section class="panel" style="grid-column: 1 / -1;">
-      <h2>Alert captures</h2>
+      <div class="panel-head">
+        <h2>Alert captures</h2>
+        <button id="alerts-delete-all" class="ghost danger-ghost" type="button">Delete all</button>
+      </div>
       <p class="hint">Pictures saved when an alert rule fired. Tap one to enlarge.</p>
       <div id="alerts-grid" class="results"></div>
       <div id="alerts-sentinel" class="sentinel"></div>
@@ -163,6 +170,27 @@
       </div>
       <h3>Detections by hour of day</h3>
       <canvas id="hour-chart" height="120"></canvas>
+    </section>
+  </main>
+
+  <main id="tab-quad" class="tab-view">
+    <section class="panel" style="grid-column: 1 / -1;">
+      <div class="panel-head"><h2>Quad view</h2></div>
+      <div id="quad-grid" class="quad-grid"></div>
+    </section>
+  </main>
+
+  <main id="tab-single" class="tab-view">
+    <section class="panel" style="grid-column: 1 / -1;">
+      <div class="panel-head"><h2>Camera</h2></div>
+      <div id="single-stage" class="single-stage">
+        <img id="single-feed" alt="camera feed">
+        <div class="single-overlay">
+          <select id="single-select" aria-label="Select camera"></select>
+          <button id="single-fullscreen" class="ghost" type="button">Fullscreen</button>
+        </div>
+        <span id="single-empty" class="muted" hidden>No cameras. Add one from the settings menu.</span>
+      </div>
     </section>
   </main>
 

@@ -1,5 +1,8 @@
 // Gallery (grouped by object) and the lightbox (overlay boxes, toggle, nav, swipe).
-import { $, fmt, api, postJSON } from './api.js';
+import { $, fmt, api, postJSON, armConfirm } from './api.js';
+
+// Notify other views (e.g. the Alerts tab) that captures changed (deleted/pinned).
+const emitChanged = () => document.dispatchEvent(new CustomEvent('argus:changed'));
 
 const PAGE = 30;
 let galleryGroups = [];    // accumulated across pages
@@ -107,6 +110,7 @@ async function deleteGroup(i) {
   if (!confirm(msg)) return;
   await api('/api/gallery/group?gkey=' + encodeURIComponent(g.gkey), { method: 'DELETE' });
   loadGallery();
+  emitChanged();
 }
 
 export { sentinelNear };
@@ -206,6 +210,7 @@ $('lb-delete').addEventListener('click', async () => {
   await api('/api/snapshot/' + encodeURIComponent(it.snapshot), { method: 'DELETE' });
   lbItems.splice(lbIndex, 1);
   loadGallery();
+  emitChanged();
   if (!lbItems.length) closeLightbox();
   else showLightboxAt(Math.min(lbIndex, lbItems.length - 1));
 });
@@ -246,3 +251,8 @@ window.addEventListener('resize', () => {
 
 $('gallery-form').addEventListener('submit', e => { e.preventDefault(); loadGallery(); });
 $('gallery-refresh').addEventListener('click', loadGallery);
+armConfirm($('gallery-delete-all'), 'Click again to delete ALL', async () => {
+  await api('/api/gallery/all', { method: 'DELETE' });
+  loadGallery();
+  emitChanged();
+});

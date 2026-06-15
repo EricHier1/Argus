@@ -48,14 +48,23 @@ $('clean-now').addEventListener('click', async () => {
 // --- camera management ------------------------------------------------------
 let selectedSource = null;
 async function loadCameras() {
-  const { devices, active } = await api('/api/devices');
+  const { devices, active, names = {} } = await api('/api/devices');
   const activeSet = new Set(active.map(String));
+  const esc = (v) => String(v).replace(/"/g, '&quot;');
 
   $('active-cameras').innerHTML = active.length
-    ? active.map(s => `<div class="device-opt">
-        <span>cam ${s}</span>
-        <button class="ghost" data-action="remove" data-source="${encodeURIComponent(s)}">remove</button>
-      </div>`).join('')
+    ? active.map(s => {
+        const isUrl = /[^0-9]/.test(String(s));         // numeric = local index, else a stream URL
+        const sub = isUrl ? String(s) : `local index ${s}`;
+        return `<div class="device-opt active-cam">
+          <span class="cam-info">
+            <input class="cam-rename" data-source="${encodeURIComponent(s)}"
+                   value="${esc(names[String(s)] || '')}" placeholder="Camera ${isUrl ? '' : s}" aria-label="Camera name">
+            <span class="cam-sub muted" title="${esc(s)}">${sub}</span>
+          </span>
+          <button class="ghost" data-action="remove" data-source="${encodeURIComponent(s)}">remove</button>
+        </div>`;
+      }).join('')
     : '<span class="muted">No active cameras.</span>';
 
   const list = $('device-list');
@@ -99,6 +108,13 @@ async function removeCamera(encSource) {
 $('active-cameras').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-action="remove"]');
   if (btn) removeCamera(btn.dataset.source);
+});
+// rename a camera (saves on change/blur) — no popup
+$('active-cameras').addEventListener('change', async (e) => {
+  const inp = e.target.closest('input.cam-rename');
+  if (!inp) return;
+  await postJSON('/api/cameras/name', { source: decodeURIComponent(inp.dataset.source), name: inp.value });
+  pollStatus();   // refresh names in the status bar / feeds
 });
 $('add-camera').addEventListener('click', addCamera);
 $('rescan').addEventListener('click', () => {
