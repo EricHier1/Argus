@@ -1,6 +1,6 @@
 // Dashboard widgets: detection labels, alerts feed, alert rules, search, activity.
 import { $, fmt, api, postJSON, toEpoch } from './api.js';
-import { syncGalleryFilter } from './gallery.js';
+import { syncGalleryFilter, openLightboxItems, sentinelNear } from './gallery.js';
 
 // --- labels (populate filters + datalist) ----------------------------------
 export async function loadLabels() {
@@ -17,14 +17,24 @@ export async function loadLabels() {
   syncGalleryFilter();
 }
 
-// --- alerts ----------------------------------------------------------------
+// --- alerts (dashboard panel + paginated Alerts tab) -----------------------
+const ALERT_PAGE = 30;
 let lastAlertTs = 0;
+let dashAlerts = [];                                  // dashboard panel (recent, polled)
+let tabAlerts = [], aBefore = null, aLoading = false, aDone = false;   // Alerts tab (paginated)
+
 export async function pollAlerts() {
-  const alerts = await api('/api/alerts?limit=50');
+  const [alerts, c] = await Promise.all([
+    api('/api/alerts?limit=50'),
+    api('/api/alerts/count').catch(() => ({ count: null })),
+  ]);
+  dashAlerts = alerts;
+  if (c.count != null) $('alerts-count').textContent = c.count;
   const list = $('alerts-list');
   if (!alerts.length) { list.textContent = 'No alerts yet.'; return; }
-  list.innerHTML = alerts.map(a => `
-    <div class="alert-item">
+  list.innerHTML = alerts.map((a, i) => `
+    <div class="alert-item ${a.snapshot ? 'clickable' : ''}"
+         ${a.snapshot ? `data-i="${i}" tabindex="0" role="button"` : ''}>
       ${a.snapshot ? `<img src="/snapshots/${a.snapshot}">` : ''}
       <div class="meta">
         <div class="label">${a.message || a.label}</div>
@@ -38,7 +48,70 @@ export async function pollAlerts() {
   lastAlertTs = alerts[0].ts;
 }
 
-// --- rules -----------------------------------------------------------------
+function alertTile(a, i) {
+  return `<div class="result" data-i="${i}" tabindex="0" role="button" aria-label="${a.message || a.label}">
+    <img src="/snapshots/${a.snapshot}" loading="lazy" alt="">
+    <div class="label">${a.message || a.label}</div>
+    <div class="muted">${fmt(a.ts)}</div>
+  </div>`;
+}
+
+async function loadAlertsPage(reset) {
+  if (aLoading || (aDone && !reset)) return;
+  if (reset) { tabAlerts = []; aBefore = null; aDone = false; $('alerts-grid').innerHTML = ''; }
+  aLoading = true;
+  const params = new URLSearchParams();
+  params.set('limit', String(ALERT_PAGE));
+  if (aBefore != null) params.set('before', aBefore);
+  let page;
+  try { page = await api('/api/alerts?' + params.toString()); }
+  catch (e) {
+    aLoading = false;
+    if (reset) $('alerts-grid').innerHTML = '<span class="muted">Could not load alerts.</span>';
+    return;
+  }
+  if (page.length) aBefore = page[page.length - 1].ts;   // advance cursor past oldest in page
+  if (page.length < ALERT_PAGE) aDone = true;
+  const withPics = page.filter(a => a.snapshot);
+  const start = tabAlerts.length;
+  tabAlerts.push(...withPics);
+  if (withPics.length) $('alerts-grid').insertAdjacentHTML('beforeend', withPics.map((a, k) => alertTile(a, start + k)).join(''));
+  if (!tabAlerts.length && aDone) {
+    $('alerts-grid').innerHTML = '<span class="muted">No alert captures yet. Add an alert rule on the dashboard; matches will appear here.</span>';
+  }
+  aLoading = false;
+  if (!aDone && sentinelNear('alerts-sentinel')) setTimeout(() => loadAlertsPage(false), 60);
+}
+export function loadAlertsTab() { loadAlertsPage(true); }
+
+new IntersectionObserver((e) => { if (e[0].isIntersecting) loadAlertsPage(false); },
+  { rootMargin: '300px' }).observe($('alerts-sentinel'));
+
+// Open an alert's picture in the lightbox, browsable across that list's pics.
+function openAlertFrom(list, i) {
+  const a = list[i];
+  if (!a || !a.snapshot) return;
+  const withPics = list.filter(x => x.snapshot);
+  const items = withPics.map(x => ({ snapshot: x.snapshot, ts: x.ts, labels: x.label, kept: 0 }));
+  const idx = withPics.findIndex(x => x === a);
+  openLightboxItems(items, idx < 0 ? 0 : idx);
+}
+
+// event delegation — dashboard alert rows + Alerts-tab tiles
+$('alerts-list').addEventListener('click', (e) => {
+  const row = e.target.closest('.alert-item[data-i]');
+  if (row) openAlertFrom(dashAlerts, +row.dataset.i);
+});
+$('alerts-grid').addEventListener('click', (e) => {
+  const tile = e.target.closest('.result[data-i]');
+  if (tile) openAlertFrom(tabAlerts, +tile.dataset.i);
+});
+['alerts-list', 'alerts-grid'].forEach(id => $(id).addEventListener('keydown', (e) => {
+  const t = e.target.closest('[data-i]');
+  if (t && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); t.click(); }
+}));
+
+// --- rules (event-delegated) -----------------------------------------------
 export async function loadRules() {
   const rules = await api('/api/rules');
   const list = $('rules-list');
@@ -46,13 +119,13 @@ export async function loadRules() {
   list.innerHTML = rules.map(r => {
     const when = (r.start_hour == null || r.end_hour == null)
       ? 'any time' : `${r.start_hour}:00 to ${r.end_hour}:00`;
-    return `<div class="rule-item ${r.active ? '' : 'inactive'}">
+    return `<div class="rule-item ${r.active ? '' : 'inactive'}" data-id="${r.id}">
       <div class="meta">
         <div class="label">${r.label} <span class="badge">conf ≥ ${r.min_conf}</span></div>
         <div class="muted">${when}</div>
       </div>
-      <button class="ghost" onclick="toggleRule(${r.id}, ${r.active ? 0 : 1})">${r.active ? 'pause' : 'enable'}</button>
-      <button class="ghost" onclick="deleteRule(${r.id})">delete</button>
+      <button class="ghost" data-action="toggle" data-active="${r.active ? 0 : 1}">${r.active ? 'pause' : 'enable'}</button>
+      <button class="ghost" data-action="delete">delete</button>
     </div>`;
   }).join('');
 }
@@ -64,8 +137,13 @@ async function deleteRule(id) {
   await api(`/api/rules/${id}`, { method: 'DELETE' });
   loadRules();
 }
-window.toggleRule = toggleRule;
-window.deleteRule = deleteRule;
+$('rules-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const id = +btn.closest('.rule-item').dataset.id;
+  if (btn.dataset.action === 'toggle') toggleRule(id, +btn.dataset.active);
+  else if (btn.dataset.action === 'delete') deleteRule(id);
+});
 
 $('rule-form').addEventListener('submit', async (e) => {
   e.preventDefault();

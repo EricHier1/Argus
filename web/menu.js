@@ -54,7 +54,7 @@ async function loadCameras() {
   $('active-cameras').innerHTML = active.length
     ? active.map(s => `<div class="device-opt">
         <span>cam ${s}</span>
-        <button class="ghost" onclick="removeCamera('${encodeURIComponent(s)}')">remove</button>
+        <button class="ghost" data-action="remove" data-source="${encodeURIComponent(s)}">remove</button>
       </div>`).join('')
     : '<span class="muted">No active cameras.</span>';
 
@@ -96,7 +96,10 @@ async function removeCamera(encSource) {
   forceFeedRebuild();
   loadCameras(); pollStatus();
 }
-window.removeCamera = removeCamera;
+$('active-cameras').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-action="remove"]');
+  if (btn) removeCamera(btn.dataset.source);
+});
 $('add-camera').addEventListener('click', addCamera);
 $('rescan').addEventListener('click', () => {
   $('device-list').innerHTML = '<span class="muted">scanning…</span>';

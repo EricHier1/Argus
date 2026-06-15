@@ -12,6 +12,8 @@
     <nav class="tabs">
       <button class="tab-btn active" data-tab="dashboard" title="Shortcut: 1">Dashboard <kbd>1</kbd></button>
       <button class="tab-btn" data-tab="gallery" title="Shortcut: 2">Gallery <kbd>2</kbd></button>
+      <button class="tab-btn" data-tab="alerts" title="Shortcut: 3">Alerts <kbd>3</kbd></button>
+      <button class="tab-btn" data-tab="analytics" title="Shortcut: 4">Analytics <kbd>4</kbd></button>
     </nav>
     <div id="status" class="status">connecting…</div>
     <button id="menu-btn" class="menu-btn" aria-label="Settings menu" aria-haspopup="true" aria-expanded="false" title="Settings"><span></span></button>
@@ -65,7 +67,10 @@
     </section>
 
     <section class="panel alerts">
-      <h2>Alerts</h2>
+      <div class="panel-head">
+        <h2>Alerts</h2>
+        <span id="alerts-count" class="count-pill" title="Total alerts">0</span>
+      </div>
       <div id="alerts-list" class="list">No alerts yet.</div>
     </section>
 
@@ -129,6 +134,35 @@
         <button type="button" id="gallery-refresh" class="ghost">Refresh</button>
       </form>
       <div id="gallery-grid" class="results"></div>
+      <div id="gallery-sentinel" class="sentinel"></div>
+    </section>
+  </main>
+
+  <main id="tab-alerts" class="tab-view">
+    <section class="panel" style="grid-column: 1 / -1;">
+      <h2>Alert captures</h2>
+      <p class="hint">Pictures saved when an alert rule fired. Tap one to enlarge.</p>
+      <div id="alerts-grid" class="results"></div>
+      <div id="alerts-sentinel" class="sentinel"></div>
+    </section>
+  </main>
+
+  <main id="tab-analytics" class="tab-view">
+    <section class="panel" style="grid-column: 1 / -1;">
+      <h2>Analytics</h2>
+      <div id="stat-cards" class="stat-cards"></div>
+      <div class="analytics-cols">
+        <div>
+          <h3>Top objects</h3>
+          <div id="top-objects" class="barlist"></div>
+        </div>
+        <div>
+          <h3>By camera</h3>
+          <div id="by-camera" class="barlist"></div>
+        </div>
+      </div>
+      <h3>Detections by hour of day</h3>
+      <canvas id="hour-chart" height="120"></canvas>
     </section>
   </main>
 

@@ -127,10 +127,11 @@ def search_detections(label=None, start=None, end=None, limit=200):
         return [dict(r) for r in c.execute(q, params).fetchall()]
 
 
-def gallery(label=None, limit=120, pinned=False):
-    """Gallery grouped by object appearance. Each row is one object (an event_id,
-    or a lone snapshot when untracked), with its newest snapshot as the tile, a
-    count of how many pictures it has, and whether any are pinned.
+def gallery(label=None, limit=30, pinned=False, before=None):
+    """Gallery grouped by object appearance, paginated by a `before` timestamp
+    cursor (return groups whose newest pic is older than `before`). Each row is
+    one object (an event_id, or a lone snapshot when untracked), with its newest
+    snapshot as the tile, a count of pictures, and whether any are pinned.
 
     Returns dicts: {gkey, snapshot, ts, labels, n, source, kept}.
     SQLite's bare-column rule makes `snapshot`/`source` come from the MAX(ts) row,
@@ -154,8 +155,14 @@ def gallery(label=None, limit=120, pinned=False):
                     WHERE label = :label AND snapshot IS NOT NULL)"""
         params["label"] = label
     q += " GROUP BY gkey"
+    having = []
     if pinned:
-        q += " HAVING kept = 1"
+        having.append("kept = 1")
+    if before is not None:
+        having.append("MAX(ts) < :before")
+        params["before"] = before
+    if having:
+        q += " HAVING " + " AND ".join(having)
     q += " ORDER BY ts DESC LIMIT :limit"
     params["limit"] = limit
     with connect() as c:
@@ -183,6 +190,31 @@ def label_summary():
             "SELECT label, COUNT(*) n, MAX(ts) last_seen FROM detections GROUP BY label ORDER BY n DESC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def analytics():
+    """Aggregate stats for the Analytics tab."""
+    with connect() as c:
+        det = c.execute("SELECT COUNT(*) n FROM detections").fetchone()["n"]
+        alr = c.execute("SELECT COUNT(*) n FROM alerts").fetchone()["n"]
+        snaps = c.execute(
+            "SELECT COUNT(DISTINCT snapshot) n FROM detections WHERE snapshot IS NOT NULL"
+        ).fetchone()["n"]
+        types = c.execute("SELECT COUNT(DISTINCT label) n FROM detections").fetchone()["n"]
+        by_label = [dict(r) for r in c.execute(
+            "SELECT label, COUNT(*) n FROM detections GROUP BY label ORDER BY n DESC LIMIT 15")]
+        by_camera = [dict(r) for r in c.execute(
+            "SELECT source, COUNT(*) n FROM detections GROUP BY source ORDER BY n DESC")]
+        hours = [0] * 24
+        for r in c.execute(
+            "SELECT CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER) h, "
+            "COUNT(*) n FROM detections GROUP BY h"):
+            if r["h"] is not None:
+                hours[r["h"]] = r["n"]
+    return {
+        "totals": {"detections": det, "alerts": alr, "snapshots": snaps, "types": types},
+        "by_label": by_label, "by_camera": by_camera, "by_hour": hours,
+    }
 
 
 def activity(hours=24, buckets=24):
@@ -235,12 +267,22 @@ def insert_alert(rule_id, label, confidence, message, snapshot):
         )
 
 
-def recent_alerts(limit=100, since=None):
-    q = "SELECT * FROM alerts"
+def count_alerts():
+    with connect() as c:
+        return c.execute("SELECT COUNT(*) AS n FROM alerts").fetchone()["n"]
+
+
+def recent_alerts(limit=100, since=None, before=None):
+    """Alerts newest-first. `since` (ts >) for polling new ones; `before` (ts <)
+    is the pagination cursor for the Alerts tab."""
+    q = "SELECT * FROM alerts WHERE 1=1"
     params = []
     if since is not None:
-        q += " WHERE ts > ?"
+        q += " AND ts > ?"
         params.append(since)
+    if before is not None:
+        q += " AND ts < ?"
+        params.append(before)
     q += " ORDER BY ts DESC LIMIT ?"
     params.append(limit)
     with connect() as c:

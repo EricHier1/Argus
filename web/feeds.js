@@ -2,8 +2,36 @@
 import { $, api, postJSON } from './api.js';
 
 let renderedSources = null;   // null forces the first render even with 0 cameras
+let feedGen = 0;              // bumped on every rebuild so old frame-pumps stop
+const FRAME_MS = 120;        // ~8 fps live view (polled JPEG, works on every browser)
 
 export function forceFeedRebuild() { renderedSources = null; }
+
+// Continuously poll the latest JPEG for one camera and swap it into the <img>.
+// Replaces MJPEG (multipart/x-mixed-replace), which iOS Safari renders unreliably.
+function pumpFrames(img, source, gen) {
+  let curUrl = null;
+  const schedule = (ms) => { if (gen === feedGen) setTimeout(tick, ms); };
+  async function tick() {
+    if (gen !== feedGen) { if (curUrl) URL.revokeObjectURL(curUrl); return; }
+    try {
+      const r = await fetch(`/frame?source=${encodeURIComponent(source)}&t=${Date.now()}`, { cache: 'no-store' });
+      if (gen !== feedGen) { if (curUrl) URL.revokeObjectURL(curUrl); return; }
+      if (r.ok) {
+        const url = URL.createObjectURL(await r.blob());
+        img.src = url;
+        if (curUrl) URL.revokeObjectURL(curUrl);
+        curUrl = url;
+        schedule(FRAME_MS);
+      } else {
+        schedule(450);   // 204 = no frame yet / detection paused — keep last image
+      }
+    } catch (e) {
+      schedule(700);     // network hiccup — back off and retry
+    }
+  }
+  tick();
+}
 
 export async function pollStatus() {
   try {
@@ -27,12 +55,15 @@ function renderFeeds(cameras) {
   const key = cameras.map(c => c.source).join('|');
   if (key !== renderedSources) {
     renderedSources = key;
+    feedGen++;   // stop frame-pumps from the previous layout
     grid.innerHTML = cameras.length ? cameras.map(c => `
       <div class="feed-card">
-        <div class="feed-video"><img src="/stream?source=${encodeURIComponent(c.source)}" alt="camera ${c.source}"></div>
+        <div class="feed-video"><img alt="camera ${c.source}"></div>
         <div class="feed-cap"><span class="feed-name">cam ${c.source}</span><span class="feed-stat muted"></span></div>
       </div>`).join('')
       : '<span class="muted">No cameras. Add one from the settings menu.</span>';
+    const myGen = feedGen;
+    grid.querySelectorAll('.feed-card img').forEach((img, i) => pumpFrames(img, cameras[i].source, myGen));
   }
   const cards = grid.querySelectorAll('.feed-card');
   cameras.forEach((c, i) => {
@@ -60,14 +91,6 @@ function updateStatusBar(cameras) {
   const objs = cameras.reduce((a, c) => a + (c.last_detection_count || 0), 0);
   el.className = 'status live';
   el.innerHTML = `<span class="dot"></span>${live}/${cameras.length} cam live · ${cameras[0].device} · ${objs} object${objs === 1 ? '' : 's'} in frame`;
-}
-
-export function reloadFeeds() {
-  $('feed-grid').querySelectorAll('img').forEach(img => {
-    const u = new URL(img.src, location.href);
-    u.searchParams.set('t', Date.now());
-    img.src = u.toString();
-  });
 }
 
 // --- boxes toggle (live feed) ----------------------------------------------
@@ -105,6 +128,5 @@ $('power-toggle').addEventListener('click', async () => {
   }
   clearTimeout(powerArmTimer); powerArmed = false; btn.classList.remove('arm');
   await postJSON('/api/power', { on: turningOn });   // no source = all cameras
-  if (turningOn) reloadFeeds();
-  pollStatus();
+  pollStatus();   // the frame-pump auto-recovers when frames resume
 });

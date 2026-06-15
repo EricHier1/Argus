@@ -1,7 +1,7 @@
 """FastAPI app: live MJPEG stream, detection search, alert rules, snapshots."""
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Response
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -33,6 +33,20 @@ def stream(source: str = Query(None)):
         w.mjpeg_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@app.get("/frame")
+def frame(source: str = Query(None)):
+    """Latest single JPEG frame for a camera. The web UI polls this for the live
+    view — far more reliable than MJPEG across browsers (esp. iOS Safari)."""
+    w = manager.get(source)
+    if w is None:
+        return JSONResponse({"error": "no such camera"}, status_code=404)
+    jpeg = w.get_jpeg()
+    if jpeg is None:
+        return Response(status_code=204)   # no frame yet / paused — keep last image
+    return Response(content=jpeg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/status")
@@ -127,10 +141,11 @@ def labels():
 
 
 @app.get("/api/gallery")
-def gallery(label: str = Query(None), limit: int = Query(120, le=500),
-            pinned: bool = Query(False)):
-    """Gallery grouped by object (each item is one object appearance)."""
-    return db.gallery(label=label or None, limit=limit, pinned=pinned)
+def gallery(label: str = Query(None), limit: int = Query(30, le=200),
+            pinned: bool = Query(False), before: float = Query(None)):
+    """Gallery grouped by object (each item is one object appearance), paginated
+    by the `before` timestamp cursor."""
+    return db.gallery(label=label or None, limit=limit, pinned=pinned, before=before)
 
 
 @app.get("/api/gallery/group")
@@ -225,8 +240,19 @@ def remove_rule(rule_id: int):
 
 # --- alerts ----------------------------------------------------------------
 @app.get("/api/alerts")
-def alerts_feed(since: float = Query(None), limit: int = Query(100, le=500)):
-    return db.recent_alerts(limit=limit, since=since)
+def alerts_feed(since: float = Query(None), limit: int = Query(100, le=500),
+                before: float = Query(None)):
+    return db.recent_alerts(limit=limit, since=since, before=before)
+
+
+@app.get("/api/alerts/count")
+def alerts_count():
+    return {"count": db.count_alerts()}
+
+
+@app.get("/api/analytics")
+def analytics():
+    return db.analytics()
 
 
 # --- snapshots & static web ------------------------------------------------
