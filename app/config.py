@@ -1,6 +1,8 @@
 """Central configuration. Override any value with an environment variable
-(prefix ARGUS_), e.g. ARGUS_SOURCE=1 to use a second camera."""
+(prefix ARGUS_), e.g. ARGUS_SOURCE=1 to use a second camera. A gitignored `.env`
+file in the project root is loaded at startup — edit it to change cameras/IPs."""
 import os
+import re
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -8,6 +10,26 @@ DATA_DIR = BASE_DIR / "data"
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
 DB_PATH = DATA_DIR / "argus.db"
 WEB_DIR = BASE_DIR / "web"
+
+
+def _load_dotenv():
+    """Load KEY=VALUE lines from .env into the environment (real env vars win)."""
+    f = BASE_DIR / ".env"
+    if not f.exists():
+        return
+    for line in f.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        # Allow an inline comment ("KEY=value   # note"): a '#' that follows
+        # whitespace starts the comment. A '#' with no leading space is kept,
+        # so it stays safe inside a value such as a URL or password.
+        val = re.split(r"\s#", val, maxsplit=1)[0].strip()
+        os.environ.setdefault(key.strip(), val)
+
+
+_load_dotenv()
 
 
 def _env(name: str, default):
@@ -59,6 +81,10 @@ HOST = _env("HOST", "")          # explicit override of the bind address (advanc
 PORT = int(_env("PORT", "8000"))
 # Serve over HTTPS with a self-signed cert (browsers warn once). ARGUS_HTTPS=0 for http.
 HTTPS = str(_env("HTTPS", "1")).lower() not in ("0", "false", "no")
+# Access-log noise control for the endpoints the web UI polls constantly
+# (/frame, /stream, /api/status). 0 = don't log them at all (default); 1 = log
+# every one (original behavior); N = log 1 of every N. Other requests always log.
+ACCESS_LOG_EVERY = int(_env("ACCESS_LOG_EVERY", "0"))
 
 # --- Alerts ----------------------------------------------------------------
 ALERT_COOLDOWN = float(_env("ALERT_COOLDOWN", "30"))  # seconds before the same rule can fire again

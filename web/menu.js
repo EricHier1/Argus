@@ -120,6 +120,61 @@ $('add-camera').addEventListener('click', addCamera);
 $('rescan').addEventListener('click', () => {
   $('device-list').innerHTML = '<span class="muted">scanning…</span>';
   loadCameras();
+  loadDiscover();
+});
+
+// --- ONVIF network camera discovery + detect-by-IP -------------------------
+async function loadDiscover() {
+  const box = $('discovered');
+  box.innerHTML = '<span class="muted">searching network for ONVIF cameras…</span>';
+  let found;
+  try { found = (await api('/api/discover')).found || []; }
+  catch (e) { box.innerHTML = ''; return; }
+  const active = new Set((await api('/api/devices')).active.map(String));
+  box.innerHTML = found.length
+    ? found.map(f => `<div class="device-opt">
+        <span class="cam-info"><span>${f.ip}</span><span class="cam-sub muted">ONVIF network camera</span></span>
+        <button class="ghost" data-onvif-ip="${f.ip}">use</button>
+      </div>`).join('')
+    : '';   // none on this segment — the IP form below covers other subnets
+}
+$('discovered').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-onvif-ip]');
+  if (b) { $('onvif-ip').value = b.dataset.onvifIp; $('onvif-user').focus(); }
+});
+
+$('onvif-detect').addEventListener('click', async () => {
+  const ip = $('onvif-ip').value.trim();
+  if (!ip) return;
+  const btn = $('onvif-detect'), lbl = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Detecting…';
+  const box = $('onvif-results');
+  box.innerHTML = '<span class="muted">querying camera…</span>';
+  try {
+    const { urls } = await postJSON('/api/cameras/probe', {
+      ip, user: $('onvif-user').value, password: $('onvif-pass').value,
+    });
+    box.innerHTML = urls.length
+      ? urls.map((u, i) => `<div class="device-opt">
+          <span class="cam-info">
+            <span>${i === 0 ? 'Main stream' : 'Stream ' + (i + 1)}</span>
+            <span class="cam-sub muted">${u.replace(/:[^:@/]*@/, ':•••@')}</span>
+          </span>
+          <button data-add-url="${encodeURIComponent(u)}">Add</button>
+        </div>`).join('')
+      : '<span class="muted">No stream found. Check the IP/login, or the camera may not speak ONVIF — paste its RTSP URL in the field above instead.</span>';
+  } catch (e) {
+    box.innerHTML = '<span class="muted">Detect failed: ' + e.message + '</span>';
+  } finally {
+    btn.disabled = false; btn.textContent = lbl;
+  }
+});
+$('onvif-results').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-add-url]');
+  if (!b) return;
+  await postJSON('/api/cameras', { source: decodeURIComponent(b.dataset.addUrl) });
+  forceFeedRebuild(); loadCameras(); pollStatus();
+  $('onvif-results').innerHTML = '<span class="muted">Added — see Active cameras above.</span>';
 });
 
 // --- shutdown (double-click to confirm) ------------------------------------

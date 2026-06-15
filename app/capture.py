@@ -4,8 +4,18 @@ Each worker runs in its own thread: grabs frames, throttles YOLO inference,
 tracks objects, logs detections (once per appearance when tracking is on),
 saves annotated snapshots, evaluates alert rules, and keeps the latest annotated
 frame (JPEG) for the web stream."""
+import os
 import threading
 import time
+
+# Make OpenCV's FFmpeg backend use TCP for RTSP (more reliable than the UDP
+# default) with a connect/read timeout, so IP cameras don't hang or stutter.
+# Harmless for local/USB cameras (the options are ignored for non-RTSP sources).
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                      "rtsp_transport;tcp|stimeout;5000000")
+# Quiet the FFmpeg h264 decoder spam ("error while decoding MB ...") that floods
+# the log on lossy RTSP streams — those are recoverable packet-loss artifacts.
+os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "8")   # AV_LOG_FATAL — hides decode errors
 
 import cv2
 
@@ -80,19 +90,18 @@ class CameraWorker:
             self._thread.join(timeout=5)
 
     def pause(self):
-        """Turn detection OFF: stop the thread, release the camera, free the CPU."""
-        self.stop()
+        """Turn detection OFF: the live feed keeps streaming, but YOLO inference,
+        snapshots, detection logging, and alerts stop (that's where the CPU goes)."""
         self.status["paused"] = True
-        self.status["running"] = False
-        self.status["fps"] = 0.0
         self.status["last_detection_count"] = 0
-        with self._frame_lock:
-            self._latest_jpeg = None
+        if not (self._thread and self._thread.is_alive()):
+            self.start()   # keep the feed alive even if it wasn't running
 
     def resume(self):
         """Turn detection back ON."""
         self.status["paused"] = False
-        self.start()
+        if not (self._thread and self._thread.is_alive()):
+            self.start()
 
     def set_source(self, source):
         """Switch this worker's video input at runtime: stop, swap, restart."""
@@ -109,14 +118,6 @@ class CameraWorker:
 
     # --- main loop ---------------------------------------------------------
     def _run(self):
-        try:
-            self.detector = Detector()
-            self.status["device"] = self.detector.device
-            self.status["tracking"] = self.detector.track
-        except Exception as e:  # model load failure
-            self.status["error"] = f"model load failed: {e}"
-            return
-
         src = self._source_value()
         self.cap = cv2.VideoCapture(src)
         if not self.cap.isOpened():
@@ -126,6 +127,16 @@ class CameraWorker:
                 "and that the app has camera permission in System Settings > Privacy."
             )
             return
+
+        # Load YOLO lazily and non-fatally: if it fails, the live feed still
+        # streams (detection is just disabled).
+        try:
+            self.detector = Detector()
+            self.status["device"] = self.detector.device
+            self.status["tracking"] = self.detector.track
+        except Exception as e:
+            self.detector = None
+            self.status["error"] = f"model load failed: {e}"
 
         self.status["running"] = True
         self.status["error"] = None
@@ -148,6 +159,13 @@ class CameraWorker:
                 self.status["fps"] = round(frames / (now - last_fps_t), 1)
                 frames = 0
                 last_fps_t = now
+
+            # Detection OFF (paused) or no model: keep streaming raw frames, but
+            # run no YOLO / snapshots / logging / alerts.
+            if self.status["paused"] or self.detector is None:
+                last_detections = []
+                self._publish(frame)
+                continue
 
             if now - last_detect >= config.DETECT_INTERVAL:
                 last_detect = now

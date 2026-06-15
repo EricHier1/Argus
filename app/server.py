@@ -5,12 +5,13 @@ from fastapi import FastAPI, Query, Response
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import capture, config, db, devices, maintenance
+from . import capture, config, db, devices, logfilter, maintenance, onvif
 from .manager import manager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logfilter.install()   # quiet the high-frequency polling endpoints in the access log
     db.init()
     manager.start()
     # honor the remembered detection on/off state across restarts
@@ -23,6 +24,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Argus", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def no_cache_assets(request, call_next):
+    """Make the browser revalidate the HTML/JS/CSS every load, so UI changes show
+    up on a normal reload (no hard-refresh needed)."""
+    resp = await call_next(request)
+    p = request.url.path
+    if p == "/" or p.endswith((".html", ".js", ".css")):
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
 
 
 # --- live feed -------------------------------------------------------------
@@ -94,6 +106,24 @@ def list_devices():
     """Detected cameras on this machine, the sources in use, and custom names."""
     return {"devices": devices.list_cameras(), "active": manager.sources(),
             "names": db.get_camera_names()}
+
+
+@app.get("/api/discover")
+def discover_cameras():
+    """Find ONVIF network (IP) cameras via WS-Discovery (same network segment)."""
+    return {"found": onvif.discover()}
+
+
+@app.post("/api/cameras/probe")
+def probe_camera(payload: dict):
+    """Ask an IP camera (by address) for its RTSP stream URL(s) via ONVIF.
+    Works across subnets. `ip` required; `user`/`password`/`port` optional."""
+    ip = str(payload.get("ip", "")).strip()
+    if not ip:
+        return JSONResponse({"error": "ip required"}, status_code=400)
+    urls = onvif.probe_ip(ip, payload.get("user", ""), payload.get("password", ""),
+                          int(payload.get("port", 80)))
+    return {"urls": urls}
 
 
 @app.post("/api/cameras")

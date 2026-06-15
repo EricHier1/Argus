@@ -199,6 +199,15 @@ main {
 }
 .single-stage.fs img { max-height: 100dvh; }
 
+/* View layout: full-screen camera stage */
+.single-layout { flex: 1; min-height: 0; display: flex; gap: 10px; }
+.single-layout .single-stage { flex: 1; min-width: 0; }
+
+/* No text selection on touch controls */
+.single-overlay, .single-overlay button, .single-overlay select {
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+
 .chips { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   background: var(--surface); border: 1px solid var(--line);
@@ -383,7 +392,8 @@ button:focus-visible, .result:focus-visible, input:focus-visible, select:focus-v
   .results { grid-template-columns: repeat(auto-fill, minmax(44vw, 1fr)); }
   .result img { height: 90px; }
   .analytics-cols { grid-template-columns: 1fr; gap: 12px; }
-  #tab-quad > .panel, #tab-single > .panel { height: calc(100dvh - 150px); }
+  #tab-quad > .panel, #tab-single > .panel { height: calc(100dvh - 120px); }
+  .single-layout { flex-direction: column; }
 
   /* bigger tap targets */
   button, .lb-btn { padding: 11px 16px; font-size: 14px; }

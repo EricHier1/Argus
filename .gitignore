@@ -19,6 +19,7 @@ data/
 *.sqlite3
 .env
 .env.*
+!.env.example
 
 # OS / editor noise
 .DS_Store

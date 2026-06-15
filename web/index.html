@@ -29,11 +29,25 @@
     <div id="active-cameras" class="device-list"><span class="muted">loading…</span></div>
     <div class="src-header">
       <h4>Add camera</h4>
-      <button id="rescan" class="ghost" type="button">Rescan</button>
+      <button id="rescan" class="ghost" type="button">Scan</button>
     </div>
     <div id="device-list" class="device-list"><span class="muted">loading…</span></div>
-    <input id="custom-source" placeholder="camera index or stream URL">
+    <div id="discovered" class="device-list"></div>
+    <input id="custom-source" placeholder="camera index or rtsp:// URL">
     <button id="add-camera">Add camera</button>
+
+    <h4>Find IP camera (ONVIF)</h4>
+    <div class="onvif-form">
+      <input id="onvif-ip" placeholder="camera IP (e.g. 192.168.4.110)" autocomplete="off">
+      <div class="row">
+        <input id="onvif-user" placeholder="username" autocomplete="off">
+        <input id="onvif-pass" type="password" placeholder="password" autocomplete="new-password">
+      </div>
+      <button id="onvif-detect" type="button">Detect stream URL</button>
+    </div>
+    <div id="onvif-results" class="device-list"></div>
+    <p class="hint">Scan finds local + ONVIF network cameras. For an IP camera on
+      another subnet, enter its address + login and Argus fetches the RTSP URL.</p>
 
     <h3>Storage</h3>
     <div class="row">
@@ -183,13 +197,15 @@
   <main id="tab-single" class="tab-view">
     <section class="panel" style="grid-column: 1 / -1;">
       <div class="panel-head"><h2>Camera</h2></div>
-      <div id="single-stage" class="single-stage">
-        <img id="single-feed" alt="camera feed">
-        <div class="single-overlay">
-          <select id="single-select" aria-label="Select camera"></select>
-          <button id="single-fullscreen" class="ghost" type="button">Fullscreen</button>
+      <div class="single-layout">
+        <div id="single-stage" class="single-stage">
+          <img id="single-feed" alt="camera feed">
+          <div class="single-overlay">
+            <select id="single-select" aria-label="Select camera"></select>
+            <button id="single-fullscreen" class="ghost" type="button">Fullscreen</button>
+          </div>
+          <span id="single-empty" class="muted" hidden>No cameras. Add one from the settings menu.</span>
         </div>
-        <span id="single-empty" class="muted" hidden>No cameras. Add one from the settings menu.</span>
       </div>
     </section>
   </main>

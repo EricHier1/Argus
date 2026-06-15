@@ -29,12 +29,14 @@ Named after Argus Panoptes, the all-seeing giant of Greek myth.
   removes them; a dedicated "Pinned" gallery view shows just those.
 - **Alerts** — define rules (e.g. "person, confidence ≥ 0.6, between 22:00 and
   06:00"); matches are logged and shown on the dashboard.
-- **On/off + clean shutdown** — turn detection off to release cameras/CPU, or
-  cleanly stop the whole server from the menu.
+- **On/off + clean shutdown** — turn detection off to stop YOLO/snapshots/alerts
+  (the live feed keeps streaming), or cleanly stop the whole server from the menu.
 - **Storage cleanup** — auto-delete data older than N days and/or cap the number
   of snapshots kept (pinned items are always kept).
 - **Camera management** — add/remove cameras from a menu (auto-detected) or by
   pasting a stream URL, without restarting.
+- **Live views** — a multi-camera **Quad** grid and a single-camera full-screen
+  **View** tab, in addition to the dashboard feed.
 
 ---
 
@@ -188,9 +190,10 @@ file), not just the size:
   raise it to reduce noise.
 - Run detection more often (`ARGUS_DETECT_INTERVAL`) for fast-moving scenes.
 
-**Hardware:** detection currently runs on CPU. On Apple Silicon it can be moved
-to the GPU (Metal/MPS) for a meaningful speed-up, which would let you run a larger
-model at the same frame rate. Not enabled yet — a planned improvement.
+**Hardware:** detection auto-selects the best device — Apple GPU (Metal/MPS) or
+NVIDIA CUDA when available, else CPU (`ARGUS_DEVICE=auto`). The GPU speed-up lets
+you run a larger model at the same frame rate; force a device with
+`ARGUS_DEVICE=mps|cuda|cpu`.
 
 ---
 
@@ -209,8 +212,9 @@ camera ─► capture.py ─► detector.py (YOLO) ─► db.py (SQLite)
   settings, camera management, activity, shutdown, snapshots.
 - `app/manager.py` — owns the camera workers (multi-camera).
 - `app/capture.py` — per-camera background thread: grab frames, detect/track,
-  log detections, save snapshots, evaluate alerts, feed the live MJPEG stream.
+  log detections, save snapshots, evaluate alerts, publish the latest JPEG frame.
 - `app/detector.py` — YOLO wrapper with device selection + tracking.
+- `app/onvif.py` — ONVIF discovery, RTSP-URL resolution, and WS-Security helpers.
 - `app/db.py` — SQLite (`detections`, `alert_rules`, `alerts`, `settings`,
   `kept_snapshots`) and the search/gallery/activity/cleanup queries.
 - `app/alerts.py` — rule evaluation with confidence + time-of-day + per-camera cooldown.
@@ -255,4 +259,5 @@ In short: **publish the code freely; for remote use run it in `tailscale` mode.*
 Done recently: GPU (MPS/CUDA) inference · object tracking · multi-camera ·
 grouped gallery with toggleable overlay boxes · activity timeline · adaptive
 snapshot cadence · count-based cleanup · mobile-responsive UI · HTTPS · trusted
-remote access via Tailscale (`ARGUS_BIND=tailscale`) · clean shutdown.
+remote access via Tailscale (`ARGUS_BIND=tailscale`) · clean shutdown · ONVIF
+camera onboarding.
