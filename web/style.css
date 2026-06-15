@@ -1,0 +1,245 @@
+/* ==========================================================================
+   Argus — stylesheet
+   Dark-black theme adapted from the Dispatcher brand palette.
+   Sections: 1 Tokens · 2 Base · 3 Header/Nav · 4 Menu · 5 Layout/Panels
+             6 Feed · 7 Lists · 8 Forms · 9 Gallery · 10 Lightbox · 11 Responsive
+   ========================================================================== */
+
+/* --- 1. Design tokens ----------------------------------------------------- */
+:root {
+  /* surfaces */
+  --bg:        #0C0D0C;   /* app background (near-black) */
+  --panel:     #171917;   /* cards / panels */
+  --surface:   #1E211E;   /* raised: inputs, chips, hover */
+  --line:      #374151;   /* borders */
+  --line-2:    #4B5563;   /* lighter border / hover */
+  /* text */
+  --text:      #FFFFFF;
+  --text-2:    #D1D5DB;
+  --muted:     #9CA3AF;
+  /* semantic */
+  --accent:    #31a0f5;   /* info blue — primary action */
+  --ok:        #01BB4E;   /* success / live */
+  --warn:      #F2DF32;   /* warning */
+  --alert:     #F86660;   /* error / threat */
+  /* shape & type */
+  --radius:    8px;
+  --radius-sm: 6px;
+  --font:      'Roboto', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono:      'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --shadow:    0 12px 32px rgba(0, 0, 0, .6);
+}
+
+/* --- 2. Base -------------------------------------------------------------- */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 14px/1.5 var(--font);
+  background: var(--bg);
+  color: var(--text);
+}
+h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+h2 {
+  margin: 0 0 12px; font-size: 13px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+}
+h3 {
+  margin: 16px 0 10px; font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+}
+h3:first-child { margin-top: 0; }
+.muted { color: var(--muted); font-size: 12px; }
+.hint  { color: var(--muted); font-size: 12px; margin: 8px 0; }
+
+/* --- 3. Header / tabs ----------------------------------------------------- */
+header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 20px; background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 10;
+}
+nav.tabs { display: flex; gap: 4px; }
+.tab-btn {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  border-radius: var(--radius-sm); padding: 6px 14px; font-weight: 600; font-size: 13px;
+  cursor: pointer;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { background: var(--bg); color: var(--text); border-color: var(--line); }
+.tab-btn kbd {
+  font: 11px var(--mono); background: var(--surface); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; margin-left: 2px;
+}
+.tab-view { display: none; }
+.tab-view.active { display: grid; }
+
+.status { font-size: 12px; color: var(--muted); margin-left: auto; }
+.status .dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted); margin-right: 6px; vertical-align: middle;
+}
+.status.live  { color: var(--text-2); }
+.status.live  .dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.status.error { color: var(--alert); }
+.status.error .dot { background: var(--alert); }
+
+/* hamburger (CSS-drawn, no glyph) */
+.menu-btn {
+  margin-left: 4px; width: 38px; height: 34px; padding: 0;
+  background: transparent; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  cursor: pointer; position: relative;
+}
+.menu-btn::before, .menu-btn::after, .menu-btn span {
+  content: ""; position: absolute; left: 9px; right: 9px; height: 2px;
+  background: var(--text); border-radius: 2px;
+}
+.menu-btn span { top: 16px; }
+.menu-btn::before { top: 11px; }
+.menu-btn::after  { top: 21px; }
+.menu-btn:hover { border-color: var(--line-2); }
+
+/* --- 4. Settings menu ----------------------------------------------------- */
+.menu-panel {
+  position: fixed; top: 56px; right: 16px; z-index: 50; width: 330px; max-width: 92vw;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px; box-shadow: var(--shadow);
+}
+.menu-panel[hidden] { display: none; }
+.src-header { display: flex; align-items: center; justify-content: space-between; }
+.src-header h3 { margin-bottom: 8px; }
+
+.device-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.device-opt {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); cursor: pointer; font-size: 13px;
+}
+.device-opt.selected { border-color: var(--accent); background: rgba(49, 160, 245, .12); }
+.device-opt input { margin: 0; }
+.device-opt .current { margin-left: auto; font-size: 11px; color: var(--ok); }
+
+.custom-source { width: 100%; margin-bottom: 12px; }
+.custom-source input { width: 100%; }
+#apply-source { width: 100%; }
+
+/* power toggle */
+.power { width: 100%; margin-bottom: 8px; }
+.power.on  { background: var(--ok);    color: #03210f; }
+.power.off { background: var(--surface); color: var(--text); border: 1px solid var(--line); }
+
+/* --- 5. Layout / panels --------------------------------------------------- */
+main {
+  display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px;
+  max-width: 1400px; margin: 0 auto;
+}
+.panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 16px;
+}
+.feed { grid-row: span 2; }
+.search { grid-column: 1 / -1; }
+
+/* --- 6. Live feed --------------------------------------------------------- */
+.video-wrap {
+  background: #000; border-radius: var(--radius-sm); overflow: hidden;
+  aspect-ratio: 16/9; display: flex;
+}
+.video-wrap img { width: 100%; height: 100%; object-fit: contain; }
+.chips { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--text-2);
+}
+
+/* --- 7. Lists (alerts / rules) ------------------------------------------- */
+.list { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow-y: auto; }
+.alert-item, .rule-item {
+  display: flex; gap: 10px; align-items: center;
+  padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.alert-item { border-left: 3px solid var(--alert); }
+.alert-item img { width: 64px; height: 40px; object-fit: cover; border-radius: 4px; background: #000; }
+.alert-item .meta, .rule-item .meta { flex: 1; min-width: 0; }
+.alert-item .label, .rule-item .label { font-weight: 600; }
+.rule-item.inactive { opacity: .5; }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--surface); color: var(--text-2); }
+
+/* --- 8. Forms ------------------------------------------------------------- */
+form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+input, select {
+  background: var(--surface); border: 1px solid var(--line); color: var(--text);
+  border-radius: var(--radius-sm); padding: 7px 9px; font-size: 13px;
+}
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+input[type=number] { width: 90px; }
+button {
+  background: var(--accent); color: #04243f; border: 0; border-radius: var(--radius-sm);
+  padding: 7px 14px; font-size: 13px; cursor: pointer; font-weight: 600;
+}
+button:hover { filter: brightness(1.1); }
+button.ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); padding: 4px 10px; }
+button.ghost:hover { color: var(--text); border-color: var(--line-2); }
+
+/* --- 9. Gallery ----------------------------------------------------------- */
+.gallery-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.gtab {
+  background: transparent; color: var(--muted); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 5px 14px; font-weight: 600; font-size: 13px;
+}
+.gtab.active { background: var(--bg); color: var(--text); border-color: var(--accent); }
+
+.results { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-top: 12px; }
+.result {
+  position: relative; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 8px; cursor: pointer; transition: border-color .1s;
+}
+.result:hover { border-color: var(--accent); }
+.result.kept { border: 2px solid var(--accent); }
+.result img { width: 100%; height: 100px; object-fit: cover; border-radius: 4px; background: #000; }
+.result .label { font-weight: 600; margin-top: 4px; }
+
+/* pinned text badge (no emoji) */
+.pin-badge {
+  position: absolute; top: 12px; left: 12px; z-index: 2;
+  background: var(--accent); color: #04243f; font-size: 10px; font-weight: 700;
+  letter-spacing: .5px; padding: 2px 6px; border-radius: 4px;
+}
+/* delete control (x) */
+.del-badge {
+  position: absolute; top: 10px; right: 10px; z-index: 2;
+  width: 24px; height: 24px; border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, .65); color: #fff; border: 1px solid var(--line);
+  cursor: pointer; font-size: 15px; line-height: 1; padding: 0;
+  opacity: 0; transition: opacity .1s;
+}
+.result:hover .del-badge { opacity: 1; }
+.del-badge:hover { background: var(--alert); border-color: var(--alert); color: #fff; }
+
+/* --- 10. Lightbox --------------------------------------------------------- */
+.lightbox {
+  position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, .92);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+}
+.lightbox[hidden] { display: none; }
+.lightbox img { max-width: 90vw; max-height: 78vh; border-radius: var(--radius-sm); }
+.lightbox img.kept-img { border: 3px solid var(--accent); }
+.lightbox-caption { color: var(--text); font-size: 14px; }
+.lightbox-close {
+  position: absolute; top: 16px; right: 24px; font-size: 34px; line-height: 1;
+  color: #fff; cursor: pointer;
+}
+.lightbox-controls { display: flex; align-items: center; gap: 12px; }
+.lb-btn {
+  background: var(--surface); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 8px 14px; font-size: 13px; font-weight: 600;
+  cursor: pointer; text-decoration: none;
+}
+.lb-btn:hover { border-color: var(--line-2); }
+.lb-btn.pinned { background: var(--accent); color: #04243f; border-color: var(--accent); }
+.lb-btn.danger:hover { background: var(--alert); border-color: var(--alert); color: #fff; }
+
+/* --- 11. Responsive ------------------------------------------------------- */
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  .feed { grid-row: auto; }
+}

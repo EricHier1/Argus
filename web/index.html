@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Argus</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Argus</h1>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="dashboard" title="Shortcut: 1">Dashboard <kbd>1</kbd></button>
+      <button class="tab-btn" data-tab="gallery" title="Shortcut: 2">Gallery <kbd>2</kbd></button>
+    </nav>
+    <div id="status" class="status">connecting…</div>
+    <button id="menu-btn" class="menu-btn" aria-label="Settings menu" title="Settings"><span></span></button>
+  </header>
+
+  <div id="menu-panel" class="menu-panel" hidden>
+    <h3>Detection</h3>
+    <button id="power-toggle" class="power on">Detection: ON — click to turn off</button>
+    <p class="hint">Off releases the camera and uses no CPU. Your saved detections
+      and snapshots stay searchable while it's off.</p>
+
+    <div class="src-header">
+      <h3>Video source</h3>
+      <button id="rescan" class="ghost" type="button">Rescan</button>
+    </div>
+    <div id="device-list" class="device-list"><span class="muted">loading…</span></div>
+    <label class="custom-source">Or a custom source (camera index or stream URL)
+      <input id="custom-source" placeholder="e.g. 1  or  http://192.168.1.50:4747/video">
+    </label>
+    <button id="apply-source">Switch source</button>
+    <p class="hint">Switching restarts the camera. For your phone, run an IP-camera
+      app (e.g. DroidCam) and paste its stream URL.</p>
+
+    <h3>Storage cleanup</h3>
+    <label>Auto-delete data older than
+      <select id="retention">
+        <option value="0">Never (keep everything)</option>
+        <option value="1">1 day</option>
+        <option value="3">3 days</option>
+        <option value="7">7 days</option>
+        <option value="14">14 days</option>
+        <option value="30">30 days</option>
+        <option value="90">90 days</option>
+      </select>
+    </label>
+    <button id="clean-now" class="ghost" type="button">Clean now</button>
+    <p id="cleanup-status" class="hint">Pinned snapshots are never deleted.</p>
+  </div>
+
+  <main id="tab-dashboard" class="tab-view active">
+    <section class="panel feed">
+      <h2>Live feed</h2>
+      <div class="video-wrap">
+        <img id="stream" src="/stream" alt="live feed">
+      </div>
+      <div id="live-detections" class="chips"></div>
+    </section>
+
+    <section class="panel alerts">
+      <h2>Alerts</h2>
+      <div id="alerts-list" class="list">No alerts yet.</div>
+    </section>
+
+    <section class="panel rules">
+      <h2>Alert rules</h2>
+      <form id="rule-form" class="rule-form">
+        <label>Object type
+          <input id="rule-label" list="label-options" placeholder="e.g. person" required>
+          <datalist id="label-options"></datalist>
+        </label>
+        <label>Min confidence
+          <input id="rule-conf" type="number" min="0" max="1" step="0.05" value="0.5">
+        </label>
+        <label>From hour
+          <input id="rule-start" type="number" min="0" max="23" placeholder="any">
+        </label>
+        <label>To hour
+          <input id="rule-end" type="number" min="0" max="23" placeholder="any">
+        </label>
+        <button type="submit">Add rule</button>
+      </form>
+      <p class="hint">Leave hours blank for "any time". A window like 22 to 6 means 10pm to 6am.</p>
+      <div id="rules-list" class="list"></div>
+    </section>
+
+    <section class="panel search">
+      <h2>Search detections</h2>
+      <form id="search-form" class="search-form">
+        <label>Type
+          <select id="search-label"><option value="">any</option></select>
+        </label>
+        <label>From
+          <input id="search-start" type="datetime-local">
+        </label>
+        <label>To
+          <input id="search-end" type="datetime-local">
+        </label>
+        <button type="submit">Search</button>
+      </form>
+      <div id="search-results" class="results"></div>
+    </section>
+  </main>
+
+  <main id="tab-gallery" class="tab-view">
+    <section class="panel" style="grid-column: 1 / -1;">
+      <h2>Gallery</h2>
+      <div class="gallery-tabs">
+        <button class="gtab active" data-view="all" type="button">All</button>
+        <button class="gtab" data-view="pinned" type="button">Pinned</button>
+      </div>
+      <form id="gallery-form" class="search-form">
+        <label>Filter by type
+          <select id="gallery-label"><option value="">all</option></select>
+        </label>
+        <button type="submit">Apply</button>
+        <button type="button" id="gallery-refresh" class="ghost">Refresh</button>
+      </form>
+      <div id="gallery-grid" class="results"></div>
+    </section>
+  </main>
+
+  <div id="lightbox" class="lightbox" hidden>
+    <span class="lightbox-close">&times;</span>
+    <img id="lightbox-img" src="" alt="snapshot">
+    <div id="lightbox-caption" class="lightbox-caption"></div>
+    <div class="lightbox-controls">
+      <a id="lb-download" class="lb-btn" download>Download</a>
+      <button id="lb-pin" class="lb-btn">Pin to permanent</button>
+      <button id="lb-delete" class="lb-btn danger">Delete</button>
+      <span class="muted">Arrow keys to browse · Esc to close</span>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
