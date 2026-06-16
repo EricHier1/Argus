@@ -8,6 +8,7 @@
 """
 import glob
 import json
+import os
 import subprocess
 import sys
 
@@ -37,7 +38,7 @@ def _macos():
 
 def _linux():
     cams = []
-    seen_names = set()
+    seen_devs = set()
     for path in sorted(glob.glob("/dev/video*"),
                        key=lambda p: int("".join(filter(str.isdigit, p)) or 0)):
         digits = "".join(filter(str.isdigit, path))
@@ -50,10 +51,21 @@ def _linux():
                 name = f.read().strip() or name
         except OSError:
             pass
-        # one physical camera often exposes several /dev/video nodes with the
-        # same name; keep the first (lowest index, the capture node).
-        if name in seen_names:
+        # A physical camera exposes several /dev/video nodes (capture + metadata)
+        # that share one USB device path; collapse them to the first (capture)
+        # node. Dedup by device path, NOT name, so two *identical* cameras (same
+        # name, different USB port) are both listed.
+        dev = os.path.realpath(f"/sys/class/video4linux/video{idx}/device")
+        if dev in seen_devs:
             continue
-        seen_names.add(name)
+        seen_devs.add(dev)
         cams.append({"index": idx, "name": name})
+    # Disambiguate identical names (e.g. two identical USB cameras) by appending
+    # the node, so they're tellable apart in the UI until renamed.
+    counts = {}
+    for c in cams:
+        counts[c["name"]] = counts.get(c["name"], 0) + 1
+    for c in cams:
+        if counts[c["name"]] > 1:
+            c["name"] = f'{c["name"]} (video{c["index"]})'
     return cams
